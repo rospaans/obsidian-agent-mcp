@@ -104,7 +104,7 @@ export default class ObsidianClaudeMCP extends Plugin {
 
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.scheduleBroadcast()));
     this.registerDomEvent(window, "focus", () => { this.prevStateKey = null; this.scheduleBroadcast(); });
-    this.registerEditorExtension([]);
+    this.registerDomEvent(document, "selectionchange", () => this.scheduleBroadcast());
 
     this.addCommand({
       id: "send-to-claude",
@@ -330,8 +330,24 @@ export default class ObsidianClaudeMCP extends Plugin {
     }
   }
 
+  private isLocalhostRequest(req: IncomingMessage, res: ServerResponse): boolean {
+    // Block DNS-rebinding: the Host header must be our exact bind address.
+    const host = Array.isArray(req.headers["host"]) ? req.headers["host"][0] : req.headers["host"];
+    if (host !== `127.0.0.1:${MCP_HTTP_PORT}`) {
+      res.writeHead(403); res.end(); return false;
+    }
+    // Block browser-based requests: legitimate MCP clients (Claude Desktop, curl)
+    // do not send an Origin header. Browsers always do for cross-origin requests.
+    const origin = req.headers["origin"];
+    if (origin !== undefined) {
+      res.writeHead(403); res.end(); return false;
+    }
+    return true;
+  }
+
   private startMcpHttpServer() {
     this.mcpServer = createServer((req: IncomingMessage, res: ServerResponse) => {
+      if (!this.isLocalhostRequest(req, res)) return;
       const url = new URL(req.url ?? "/", `http://127.0.0.1:${MCP_HTTP_PORT}`);
 
       if (url.pathname === "/sse" && req.method === "GET") {

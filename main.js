@@ -135,7 +135,7 @@ var ObsidianClaudeMCP = class extends import_obsidian.Plugin {
       this.prevStateKey = null;
       this.scheduleBroadcast();
     });
-    this.registerEditorExtension([]);
+    this.registerDomEvent(document, "selectionchange", () => this.scheduleBroadcast());
     this.addCommand({
       id: "send-to-claude",
       name: "Send to Claude",
@@ -369,8 +369,24 @@ Sec-WebSocket-Accept: ${computeAcceptKey(wsKey)}\r
       return { content: [{ type: "text", text: JSON.stringify({ error: "Could not read task cache", detail: String(e) }) }] };
     }
   }
+  isLocalhostRequest(req, res) {
+    const host = Array.isArray(req.headers["host"]) ? req.headers["host"][0] : req.headers["host"];
+    if (host !== `127.0.0.1:${MCP_HTTP_PORT}`) {
+      res.writeHead(403);
+      res.end();
+      return false;
+    }
+    const origin = req.headers["origin"];
+    if (origin !== void 0) {
+      res.writeHead(403);
+      res.end();
+      return false;
+    }
+    return true;
+  }
   startMcpHttpServer() {
     this.mcpServer = (0, import_node_http.createServer)((req, res) => {
+      if (!this.isLocalhostRequest(req, res)) return;
       const url = new URL(req.url ?? "/", `http://127.0.0.1:${MCP_HTTP_PORT}`);
       if (url.pathname === "/sse" && req.method === "GET") {
         const sessionId = (0, import_node_crypto.randomUUID)();
