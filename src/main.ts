@@ -1,4 +1,4 @@
-import { Plugin, FileSystemAdapter, MarkdownView } from "obsidian";
+import { Plugin, FileSystemAdapter } from "obsidian";
 import { createServer, Server, IncomingMessage, ServerResponse } from "node:http";
 import { Socket } from "node:net";
 import { randomUUID } from "node:crypto";
@@ -6,6 +6,11 @@ import { createHash } from "node:crypto";
 import { writeFileSync, renameSync, unlinkSync, readdirSync, readFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+
+import { DEFAULT_SETTINGS, ClaudeMCPSettingsTab, type PluginSettings } from "./settings";
+import { createEditorTools, getSelectionData } from "./tools/editor";
+import { createTasksTool } from "./tools/tasks";
+import type { ToolDefinition } from "./tools/types";
 
 // ── WebSocket constants ──────────────────────────────────────────────────────
 
@@ -95,11 +100,16 @@ export default class ObsidianClaudeMCP extends Plugin {
   private prevStateKey: string | null = null;
   private authToken = "";
 
+  settings: PluginSettings = DEFAULT_SETTINGS;
+
   async onload() {
+    await this.loadSettings();
+    this.addSettingTab(new ClaudeMCPSettingsTab(this.app, this));
+
     cleanStaleLockFiles();
     this.authToken = randomUUID();
     this.port = await this.startServer();
-    const vaultPath = (this.app.vault.adapter as FileSystemAdapter).getBasePath();
+    const vaultPath = this.basePath();
     createLockFile(this.port, process.pid, vaultPath, this.authToken);
 
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.scheduleBroadcast()));
@@ -110,7 +120,7 @@ export default class ObsidianClaudeMCP extends Plugin {
       id: "send-to-claude",
       name: "Send to Claude",
       editorCallback: () => {
-        const data = this.getSelectionData();
+        const data = getSelectionData(this.app);
         if (!data) return;
         this.broadcast({ jsonrpc: "2.0", method: "at_mentioned", params: data });
       },
@@ -130,23 +140,29 @@ export default class ObsidianClaudeMCP extends Plugin {
     if (this.port) removeLockFile(this.port);
   }
 
-  private getSelectionData() {
-    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-    if (!view?.file) return null;
-    const editor = view.editor;
-    const basePath = (this.app.vault.adapter as FileSystemAdapter).getBasePath();
-    const cursor = editor.getCursor();
-    const from = editor.getCursor("from");
-    const to = editor.getCursor("to");
-    const text = editor.getSelection();
-    const rel = view.file.path;
-    return {
-      filePath: basePath + "/" + rel,
-      relativePath: rel.includes(" ") ? `"${rel}"` : rel,
-      cursor: { line: cursor.line, character: cursor.ch },
-      selection: { start: { line: from.line, character: from.ch }, end: { line: to.line, character: to.ch }, isEmpty: text === "", text },
-    };
+  async loadSettings() {
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
   }
+
+  async saveSettings() {
+    await this.saveData(this.settings);
+  }
+
+  private basePath(): string {
+    return (this.app.vault.adapter as FileSystemAdapter).getBasePath();
+  }
+
+  // ── Tool registry ──────────────────────────────────────────────────────────
+
+  private getActiveTools(): ToolDefinition[] {
+    const tools: ToolDefinition[] = [...createEditorTools(this.app)];
+    if (this.settings.enabledTools.tasks) {
+      tools.push(createTasksTool(() => this.basePath()));
+    }
+    return tools;
+  }
+
+  // ── Broadcasting ───────────────────────────────────────────────────────────
 
   private scheduleBroadcast() {
     if (this.broadcastTimer) clearTimeout(this.broadcastTimer);
@@ -154,7 +170,7 @@ export default class ObsidianClaudeMCP extends Plugin {
   }
 
   private doBroadcast() {
-    const data = this.getSelectionData();
+    const data = getSelectionData(this.app);
     if (!data) return;
     const key = JSON.stringify({ f: data.filePath, c: data.cursor, s: data.selection });
     if (key === this.prevStateKey) return;
@@ -169,6 +185,47 @@ export default class ObsidianClaudeMCP extends Plugin {
     const frame = makeFrame(OPCODE.TEXT, JSON.stringify(msg));
     for (const c of this.clients) { if (c.socket.writable) c.socket.write(frame); }
   }
+
+  // ── RPC routing ────────────────────────────────────────────────────────────
+
+  private handleRpc(msg: { jsonrpc: string; id: unknown; method: string; params?: Record<string, unknown> }): object {
+    const id = msg.id;
+    const tools = this.getActiveTools();
+
+    switch (msg.method) {
+      case "initialize":
+        return {
+          jsonrpc: "2.0", id,
+          result: {
+            protocolVersion: (msg.params?.protocolVersion as string) || "2025-03-26",
+            capabilities: { tools: {} },
+            serverInfo: { name: "obsidian-claude-mcp", version: this.manifest.version },
+          },
+        };
+
+      case "tools/list":
+        return {
+          jsonrpc: "2.0", id,
+          result: {
+            tools: tools.map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })),
+          },
+        };
+
+      case "tools/call": {
+        const name = msg.params?.name as string;
+        const tool = tools.find(t => t.name === name);
+        if (!tool) return { jsonrpc: "2.0", id, error: { code: -32601, message: `Tool not found: ${name}` } };
+        return { jsonrpc: "2.0", id, result: tool.call(msg.params) };
+      }
+
+      default:
+        if (["openDiff", "getDiagnostics", "checkDocumentDirty", "saveDocument", "close_tab", "closeAllDiffTabs", "executeCode"].includes(msg.method))
+          return { jsonrpc: "2.0", id, result: { content: [{ type: "text", text: "{}" }] } };
+        return { jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } };
+    }
+  }
+
+  // ── WebSocket server ───────────────────────────────────────────────────────
 
   private handleClient(socket: Socket, headers: Record<string, string | string[] | undefined>) {
     if (headers["x-claude-code-ide-authorization"] !== this.authToken) {
@@ -202,133 +259,38 @@ export default class ObsidianClaudeMCP extends Plugin {
         try {
           const msg = JSON.parse(frame.payload.toString());
           if (msg.id == null) continue;
-          const response = this.handleRpc(msg);
-          client.socket.write(makeFrame(OPCODE.TEXT, JSON.stringify(response)));
-        } catch { client.socket.write(makeFrame(OPCODE.TEXT, JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }))); }
-      }
-    }
-  }
-
-  private handleRpc(msg: { jsonrpc: string; id: unknown; method: string; params?: Record<string, unknown> }): object {
-    const id = msg.id;
-    switch (msg.method) {
-      case "initialize":
-        return { jsonrpc: "2.0", id, result: { protocolVersion: (msg.params?.protocolVersion as string) || "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "obsidian-claude-mcp", version: this.manifest.version } } };
-      case "tools/list":
-        return { jsonrpc: "2.0", id, result: { tools: [
-          { name: "getCurrentSelection", description: "Get the current selection in the active editor", inputSchema: { type: "object", properties: {} } },
-          { name: "getLatestSelection", description: "Get the most recent selection", inputSchema: { type: "object", properties: {} } },
-          { name: "getOpenEditors", description: "Get all open editor tabs", inputSchema: { type: "object", properties: {} } },
-          { name: "getWorkspaceFolders", description: "Get vault path", inputSchema: { type: "object", properties: {} } },
-          { name: "getTasks", description: "Get all pending tasks from the vault, grouped by overdue, today, this week, future, and undated. Reads from the Task Board plugin cache.", inputSchema: { type: "object", properties: {} } },
-        ]}};
-      case "tools/call": {
-        const name = msg.params?.name as string;
-        const result = this.handleTool(name);
-        if (!result) return { jsonrpc: "2.0", id, error: { code: -32601, message: `Tool not found: ${name}` } };
-        return { jsonrpc: "2.0", id, result };
-      }
-      default:
-        if (["openDiff","getDiagnostics","checkDocumentDirty","saveDocument","close_tab","closeAllDiffTabs","executeCode"].includes(msg.method))
-          return { jsonrpc: "2.0", id, result: { content: [{ type: "text", text: "{}" }] } };
-        return { jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } };
-    }
-  }
-
-  private handleTool(name: string): object | null {
-    const wrap = (data: object) => ({ content: [{ type: "text", text: JSON.stringify(data) }] });
-    const basePath = (this.app.vault.adapter as FileSystemAdapter).getBasePath();
-    switch (name) {
-      case "getCurrentSelection": { const d = this.getSelectionData(); return d ? wrap(d) : wrap({ error: "no active file" }); }
-      case "getLatestSelection": { const d = this.getSelectionData(); return d ? wrap(d) : wrap({ error: "no selection tracked yet" }); }
-      case "getOpenEditors": {
-        const leaves = this.app.workspace.getLeavesOfType("markdown");
-        const active = this.app.workspace.getActiveViewOfType(MarkdownView);
-        return wrap({ tabs: leaves.filter(l => (l.view as MarkdownView).file).map(l => {
-          const file = (l.view as MarkdownView).file!;
-          return { uri: "file://" + basePath + "/" + file.path, isActive: l.view === active, label: file.basename, languageId: "markdown" };
-        })});
-      }
-      case "getWorkspaceFolders": return wrap({ folders: [basePath] });
-      case "getTasks": return this.getTasksFromCache(basePath);
-      default: return null;
-    }
-  }
-
-  private getTasksFromCache(basePath: string): object {
-    const wrap = (data: object) => ({ content: [{ type: "text", text: JSON.stringify(data) }] });
-    try {
-      const cachePath = join(basePath, ".obsidian", "plugins", "task-board", "tasks.json");
-      const raw = readFileSync(cachePath, "utf-8");
-      const cache = JSON.parse(raw);
-
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const todayStr = today.toISOString().split("T")[0];
-
-      const weekEnd = new Date(today);
-      weekEnd.setDate(today.getDate() + 7);
-      const weekEndStr = weekEnd.toISOString().split("T")[0];
-
-      const overdue: object[] = [];
-      const dueToday: object[] = [];
-      const dueThisWeek: object[] = [];
-      const future: object[] = [];
-      const undated: object[] = [];
-
-      const pending = cache.Pending as Record<string, Array<{
-        id: string;
-        title: string;
-        due: string;
-        priority: number;
-        tags: string[];
-        filePath: string;
-        status: string;
-      }>>;
-
-      for (const tasks of Object.values(pending)) {
-        for (const task of tasks) {
-          const t = {
-            id: task.id,
-            title: task.title.replace(/^-\s*\[.\]\s*/, "").replace(/📅.*$/, "").trim(),
-            due: task.due || null,
-            priority: task.priority,
-            tags: task.tags,
-            file: task.filePath,
-          };
-          if (!task.due) {
-            undated.push(t);
-          } else if (task.due < todayStr) {
-            overdue.push(t);
-          } else if (task.due === todayStr) {
-            dueToday.push(t);
-          } else if (task.due <= weekEndStr) {
-            dueThisWeek.push(t);
-          } else {
-            future.push(t);
-          }
+          client.socket.write(makeFrame(OPCODE.TEXT, JSON.stringify(this.handleRpc(msg))));
+        } catch {
+          client.socket.write(makeFrame(OPCODE.TEXT, JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } })));
         }
       }
-
-      return wrap({
-        asOf: cache.Modified_at,
-        summary: {
-          overdue: overdue.length,
-          today: dueToday.length,
-          thisWeek: dueThisWeek.length,
-          future: future.length,
-          undated: undated.length,
-        },
-        overdue,
-        today: dueToday,
-        thisWeek: dueThisWeek,
-        future,
-        undated,
-      });
-    } catch (e) {
-      return ({ content: [{ type: "text", text: JSON.stringify({ error: "Could not read task cache", detail: String(e) }) }] });
     }
   }
+
+  private startServer(): Promise<number> {
+    return new Promise((resolve, reject) => {
+      this.server = createServer((_req, res) => { res.writeHead(400); res.end(); });
+      this.server.on("upgrade", (req, socket, head) => {
+        const s = socket as Socket;
+        if (head.length > 0) s.unshift(head);
+        this.handleClient(s, req.headers as Record<string, string | string[] | undefined>);
+      });
+      this.server.on("error", reject);
+      this.server.listen(0, "127.0.0.1", () => {
+        const addr = this.server!.address() as { port: number };
+        this.pingInterval = setInterval(() => {
+          for (const c of this.clients) {
+            if (!c.alive) { c.socket.destroy(); this.clients.delete(c); continue; }
+            c.alive = false;
+            if (c.socket.writable) c.socket.write(makeFrame(OPCODE.PING, Buffer.alloc(0)));
+          }
+        }, 30_000);
+        resolve(addr.port);
+      });
+    });
+  }
+
+  // ── MCP HTTP/SSE server ────────────────────────────────────────────────────
 
   private isLocalhostRequest(req: IncomingMessage, res: ServerResponse): boolean {
     // Block DNS-rebinding: the Host header must be our exact bind address.
@@ -383,28 +345,5 @@ export default class ObsidianClaudeMCP extends Plugin {
     this.mcpServer.listen(MCP_HTTP_PORT, "127.0.0.1", () =>
       console.log(`[claude-mcp] MCP HTTP server on 127.0.0.1:${MCP_HTTP_PORT}`)
     );
-  }
-
-  private startServer(): Promise<number> {
-    return new Promise((resolve, reject) => {
-      this.server = createServer((_req, res) => { res.writeHead(400); res.end(); });
-      this.server.on("upgrade", (req, socket, head) => {
-        const s = socket as Socket;
-        if (head.length > 0) s.unshift(head);
-        this.handleClient(s, req.headers as Record<string, string | string[] | undefined>);
-      });
-      this.server.on("error", reject);
-      this.server.listen(0, "127.0.0.1", () => {
-        const addr = this.server!.address() as { port: number };
-        this.pingInterval = setInterval(() => {
-          for (const c of this.clients) {
-            if (!c.alive) { c.socket.destroy(); this.clients.delete(c); continue; }
-            c.alive = false;
-            if (c.socket.writable) c.socket.write(makeFrame(OPCODE.PING, Buffer.alloc(0)));
-          }
-        }, 30_000);
-        resolve(addr.port);
-      });
-    });
   }
 }

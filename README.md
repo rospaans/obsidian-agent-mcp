@@ -1,8 +1,8 @@
 # obsidian-claude-mcp
 
-An Obsidian plugin that gives [Claude Code](https://claude.ai/code) full awareness of your vault: your active file, current selection, open tabs, and all pending tasks — updated in real time.
+>This is a personal project Vibe-coded for fun. It connects Claude Code to Obsidian the same way it connects to VS Code. The goal is to be able to use LLMs to handle the brunt work in maintaining a knowledge base or task manager. (or both :)) 
 
-It exposes two local MCP interfaces (WebSocket + HTTP/SSE) that Claude Code connects to automatically, and integrates with the [Task Board](https://obsidian.md/plugins?id=task-board) and [Obsidian Tasks](https://obsidian.md/plugins?id=obsidian-tasks-plugin) plugins to surface your task list directly inside Claude's context.
+It exposes two local MCP interfaces (WebSocket + HTTP/SSE) that Claude Code connects to automatically, and is designed to be extended with your own tools.
 
 ---
 
@@ -20,26 +20,31 @@ It exposes two local MCP interfaces (WebSocket + HTTP/SSE) that Claude Code conn
 
 ### MCP tools exposed
 
-| Tool | Description |
-|---|---|
-| `getCurrentSelection` | Active file path, cursor position, and selected text |
-| `getLatestSelection` | Most recently tracked selection (useful when focus has moved) |
-| `getOpenEditors` | All open markdown tabs with file URI, label, and which is active |
-| `getWorkspaceFolders` | Vault root path |
-| `getTasks` | All pending tasks from the vault, grouped by overdue / today / this week / future / undated |
-
-### Task awareness
-The `getTasks` tool reads the cache that the [Task Board](https://obsidian.md/plugins?id=task-board) plugin maintains at `.obsidian/plugins/task-board/tasks.json`. Tasks are created and managed with the [Obsidian Tasks](https://obsidian.md/plugins?id=obsidian-tasks-plugin) plugin. This gives Claude a structured, up-to-date view of your workload without needing to scan your entire vault.
+| Tool | Description | Toggle in settings |
+|---|---|---|
+| `getCurrentSelection` | Active file path, cursor position, and selected text | Always on |
+| `getLatestSelection` | Most recently tracked selection (useful when focus has moved) | Always on |
+| `getOpenEditors` | All open markdown tabs with file URI, label, and which is active | Always on |
+| `getWorkspaceFolders` | Vault root path | Always on |
+| `getTasks` | All pending tasks from the vault, grouped by overdue / today / this week / future / undated | Task Board toggle |
 
 ---
 
-## Required Obsidian plugins
+## Plugins this builds on
 
-| Plugin | Purpose |
-|---|---|
-| [Terminal](https://obsidian.md/plugins?id=terminal) | Run Claude Code inside Obsidian as a side panel |
-| [Obsidian Tasks](https://obsidian.md/plugins?id=obsidian-tasks-plugin) | Create and manage tasks across your vault |
-| [Task Board](https://obsidian.md/plugins?id=task-board) | Maintains the task cache that the `getTasks` tool reads |
+This plugin doesn't do everything itself — it connects the dots between a few excellent community plugins:
+
+### [Terminal for Obsidian](https://obsidian.md/plugins?id=terminal) · [GitHub](https://github.com/polyipseity/obsidian-terminal)
+
+Integrates a full terminal emulator inside Obsidian as a side panel. This is how you run `claude` (or `ollama run`) without leaving Obsidian. Supports multiple shell profiles (bash, zsh, PowerShell, etc.), saves and restores terminal history across sessions, and has built-in keyboard shortcuts. **Required** to run an AI assistant inside Obsidian.
+
+### [Obsidian Tasks](https://obsidian.md/plugins?id=obsidian-tasks-plugin) · [GitHub](https://github.com/obsidian-tasks-group/obsidian-tasks)
+
+The de-facto standard for task management in Obsidian. Lets you track tasks across your entire vault with due dates, recurrence, priorities, and rich query blocks. Tasks are written as standard markdown checkboxes with emoji metadata (e.g. `📅 2026-03-23`). **Only needed if you use the `getTasks` tool.**
+
+### [Task Board](https://obsidian.md/plugins?id=task-board) · [GitHub](https://github.com/tu2-atmanand/Task-Board)
+
+Scans all tasks across your vault and displays them on a Kanban-style board with real-time sync back to the source markdown files. It also maintains a JSON cache of all pending tasks at `.obsidian/plugins/task-board/tasks.json` — which is exactly what this plugin's `getTasks` tool reads to give Claude a structured snapshot of your workload. **Only needed if you use the `getTasks` tool.**
 
 ---
 
@@ -58,8 +63,8 @@ The `getTasks` tool reads the cache that the [Task Board](https://obsidian.md/pl
 git clone https://github.com/rospaans/obsidian-claude-mcp
 cd obsidian-claude-mcp
 npm install
+cp .env.example .env          # edit to point at your vault's plugin folder
 npm run build
-cp main.js manifest.json /path/to/your/vault/.obsidian/plugins/obsidian-claude-mcp/
 ```
 
 Then enable the plugin in Obsidian as above.
@@ -68,6 +73,8 @@ Then enable the plugin in Obsidian as above.
 
 ## Usage
 
+### With Claude Code
+
 1. Enable the plugin — it starts both servers automatically on Obsidian launch
 2. Open a terminal pane via the [Terminal](https://obsidian.md/plugins?id=terminal) plugin
 3. Run `claude` in the terminal
@@ -75,6 +82,81 @@ Then enable the plugin in Obsidian as above.
 5. Claude now sees your active file and selection in real time and can query your task list
 
 Use the command palette command **"Send to Claude"** to explicitly push your current selection as a context mention.
+
+### With a local model via Ollama
+
+Don't want to use a cloud AI? You can get similar functionality with a local model using [Ollama](https://ollama.com) and the `ollama run` command with a model that supports tool use:
+
+```bash
+ollama launch claude
+```
+
+The MCP HTTP/SSE server on `127.0.0.1:27183` can be registered with any MCP-compatible client, including local ones. Keep in mind that the quality of context awareness depends heavily on the model — smaller or less capable models may not make good use of the selection and task data that gets passed in.
+
+---
+
+## Settings
+
+Go to **Obsidian → Settings → Claude MCP** to configure which tools are active:
+
+- **Task Board integration** — disable this if you are not using the Task Board plugin; the `getTasks` tool will simply not appear in the tool list
+
+---
+
+## Adding your own tools
+
+The plugin is structured so that adding a new tool is straightforward.
+
+**1. Create a tool file** at `src/tools/my-tool.ts`:
+
+```typescript
+import { wrap, type ToolDefinition } from "./types";
+
+export function createMyTool(/* any context you need */): ToolDefinition {
+  return {
+    name: "myTool",
+    description: "What this tool does.",
+    inputSchema: { type: "object", properties: {} },
+    call() {
+      // do something and return a result
+      return wrap({ hello: "world" });
+    },
+  };
+}
+```
+
+**2. Add a toggle to `src/settings.ts`:**
+
+```typescript
+// In PluginSettings.enabledTools:
+myTool: boolean;
+
+// In DEFAULT_SETTINGS:
+myTool: true,
+
+// In ClaudeMCPSettingsTab.display():
+new Setting(containerEl)
+  .setName("My tool")
+  .setDesc("What it does and when to disable it.")
+  .addToggle(toggle =>
+    toggle
+      .setValue(this.plugin.settings.enabledTools.myTool)
+      .onChange(async value => {
+        this.plugin.settings.enabledTools.myTool = value;
+        await this.plugin.saveSettings();
+      })
+  );
+```
+
+**3. Register it in `src/main.ts`** inside `getActiveTools()`:
+
+```typescript
+if (this.settings.enabledTools.myTool) {
+  tools.push(createMyTool(/* context */));
+}
+```
+
+That's it. Both the WebSocket and HTTP/SSE transports pick it up automatically. No changes to server or routing code.
 
 ---
 
@@ -96,24 +178,12 @@ Use the command palette command **"Send to Claude"** to explicitly push your cur
 A debug wrapper (`mcp-debug-wrapper.mjs`) logs all stdio traffic to `/tmp/mcp-debug.log` for troubleshooting.
 
 ---
-
-## Verify it is working
-
-Check that the lock file was created:
-
-```bash
-ls ~/.claude/ide/
-```
-
-You should see a `.lock` file while Obsidian is open. It is removed automatically when Obsidian closes or the plugin is disabled.
-
----
-
 ## Security
 
 - Both servers bind exclusively to `127.0.0.1` — no network exposure
 - A unique auth token is generated fresh on every Obsidian launch via `crypto.randomUUID()`
 - The WebSocket server rejects any connection that does not present the correct token in the `x-claude-code-ide-authorization` header
+- The MCP HTTP/SSE server validates the `Host` header and rejects any request carrying an `Origin` header, blocking browser-based and DNS-rebinding attacks
 - Only file paths, cursor positions, and selected text are shared — file contents are never read or transmitted by the plugin itself
 - Stale lock files from crashed Obsidian processes are cleaned up automatically on startup
 

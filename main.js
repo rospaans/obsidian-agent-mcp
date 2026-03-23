@@ -23,41 +23,224 @@ __export(main_exports, {
   default: () => ObsidianClaudeMCP
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian = require("obsidian");
+var import_obsidian3 = require("obsidian");
 var import_node_http = require("node:http");
 var import_node_crypto = require("node:crypto");
 var import_node_crypto2 = require("node:crypto");
+var import_node_fs2 = require("node:fs");
+var import_node_path2 = require("node:path");
+var import_node_os = require("node:os");
+
+// src/settings.ts
+var import_obsidian = require("obsidian");
+var DEFAULT_SETTINGS = {
+  enabledTools: {
+    tasks: true
+  }
+};
+var ClaudeMCPSettingsTab = class extends import_obsidian.PluginSettingTab {
+  constructor(app, plugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+  }
+  display() {
+    const { containerEl } = this;
+    containerEl.empty();
+    containerEl.createEl("h2", { text: "Claude MCP" });
+    containerEl.createEl("h3", { text: "Tools" });
+    new import_obsidian.Setting(containerEl).setName("Task Board integration").setDesc(
+      "Expose a getTasks tool that reads pending tasks from the Task Board plugin cache. Disable this if you are not using the Task Board plugin."
+    ).addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.enabledTools.tasks).onChange(async (value) => {
+        this.plugin.settings.enabledTools.tasks = value;
+        await this.plugin.saveSettings();
+      })
+    );
+  }
+};
+
+// src/tools/editor.ts
+var import_obsidian2 = require("obsidian");
+
+// src/tools/types.ts
+function wrap(data) {
+  return { content: [{ type: "text", text: JSON.stringify(data) }] };
+}
+
+// src/tools/editor.ts
+function getSelectionData(app) {
+  const view = app.workspace.getActiveViewOfType(import_obsidian2.MarkdownView);
+  if (!view?.file) return null;
+  const editor = view.editor;
+  const basePath = app.vault.adapter.getBasePath();
+  const cursor = editor.getCursor();
+  const from = editor.getCursor("from");
+  const to = editor.getCursor("to");
+  const text = editor.getSelection();
+  const rel = view.file.path;
+  return {
+    filePath: basePath + "/" + rel,
+    relativePath: rel.includes(" ") ? `"${rel}"` : rel,
+    cursor: { line: cursor.line, character: cursor.ch },
+    selection: {
+      start: { line: from.line, character: from.ch },
+      end: { line: to.line, character: to.ch },
+      isEmpty: text === "",
+      text
+    }
+  };
+}
+function createEditorTools(app) {
+  function basePath() {
+    return app.vault.adapter.getBasePath();
+  }
+  return [
+    {
+      name: "getCurrentSelection",
+      description: "Get the current selection in the active editor",
+      inputSchema: { type: "object", properties: {} },
+      call() {
+        const d = getSelectionData(app);
+        return d ? wrap(d) : wrap({ error: "no active file" });
+      }
+    },
+    {
+      name: "getLatestSelection",
+      description: "Get the most recent selection",
+      inputSchema: { type: "object", properties: {} },
+      call() {
+        const d = getSelectionData(app);
+        return d ? wrap(d) : wrap({ error: "no selection tracked yet" });
+      }
+    },
+    {
+      name: "getOpenEditors",
+      description: "Get all open editor tabs",
+      inputSchema: { type: "object", properties: {} },
+      call() {
+        const base = basePath();
+        const leaves = app.workspace.getLeavesOfType("markdown");
+        const active = app.workspace.getActiveViewOfType(import_obsidian2.MarkdownView);
+        return wrap({
+          tabs: leaves.filter((l) => l.view.file).map((l) => {
+            const file = l.view.file;
+            return {
+              uri: "file://" + base + "/" + file.path,
+              isActive: l.view === active,
+              label: file.basename,
+              languageId: "markdown"
+            };
+          })
+        });
+      }
+    },
+    {
+      name: "getWorkspaceFolders",
+      description: "Get vault path",
+      inputSchema: { type: "object", properties: {} },
+      call() {
+        return wrap({ folders: [basePath()] });
+      }
+    }
+  ];
+}
+
+// src/tools/tasks.ts
 var import_node_fs = require("node:fs");
 var import_node_path = require("node:path");
-var import_node_os = require("node:os");
+function createTasksTool(getBasePath) {
+  return {
+    name: "getTasks",
+    description: "Get all pending tasks from the vault, grouped by overdue, today, this week, future, and undated. Reads from the Task Board plugin cache. Requires the Task Board plugin to be installed and active.",
+    inputSchema: { type: "object", properties: {} },
+    call() {
+      try {
+        const basePath = getBasePath();
+        const cachePath = (0, import_node_path.join)(basePath, ".obsidian", "plugins", "task-board", "tasks.json");
+        const cache = JSON.parse((0, import_node_fs.readFileSync)(cachePath, "utf-8"));
+        const today = /* @__PURE__ */ new Date();
+        today.setHours(0, 0, 0, 0);
+        const todayStr = today.toISOString().split("T")[0];
+        const weekEnd = new Date(today);
+        weekEnd.setDate(today.getDate() + 7);
+        const weekEndStr = weekEnd.toISOString().split("T")[0];
+        const overdue = [];
+        const dueToday = [];
+        const dueThisWeek = [];
+        const future = [];
+        const undated = [];
+        const pending = cache.Pending;
+        for (const tasks of Object.values(pending)) {
+          for (const task of tasks) {
+            const t = {
+              id: task.id,
+              title: task.title.replace(/^-\s*\[.\]\s*/, "").replace(/📅.*$/, "").trim(),
+              due: task.due || null,
+              priority: task.priority,
+              tags: task.tags,
+              file: task.filePath
+            };
+            if (!task.due) undated.push(t);
+            else if (task.due < todayStr) overdue.push(t);
+            else if (task.due === todayStr) dueToday.push(t);
+            else if (task.due <= weekEndStr) dueThisWeek.push(t);
+            else future.push(t);
+          }
+        }
+        return wrap({
+          asOf: cache.Modified_at,
+          summary: {
+            overdue: overdue.length,
+            today: dueToday.length,
+            thisWeek: dueThisWeek.length,
+            future: future.length,
+            undated: undated.length
+          },
+          overdue,
+          today: dueToday,
+          thisWeek: dueThisWeek,
+          future,
+          undated
+        });
+      } catch (e) {
+        return wrap({
+          error: "Could not read Task Board cache. Is the Task Board plugin installed and active?",
+          detail: String(e)
+        });
+      }
+    }
+  };
+}
+
+// src/main.ts
 var GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 var OPCODE = { TEXT: 1, CLOSE: 8, PING: 9, PONG: 10 };
 var MCP_HTTP_PORT = 27183;
-var LOCK_DIR = (0, import_node_path.join)((0, import_node_os.homedir)(), ".claude", "ide");
+var LOCK_DIR = (0, import_node_path2.join)((0, import_node_os.homedir)(), ".claude", "ide");
 function createLockFile(port, pid, vaultPath, authToken) {
-  (0, import_node_fs.mkdirSync)(LOCK_DIR, { recursive: true });
-  const tmp = (0, import_node_path.join)(LOCK_DIR, `${port}.lock.tmp`);
-  const lockPath = (0, import_node_path.join)(LOCK_DIR, `${port}.lock`);
-  (0, import_node_fs.writeFileSync)(tmp, JSON.stringify({ pid, port, workspaceFolders: [vaultPath], ideName: "Obsidian", transport: "ws", authToken }));
-  (0, import_node_fs.renameSync)(tmp, lockPath);
+  (0, import_node_fs2.mkdirSync)(LOCK_DIR, { recursive: true });
+  const tmp = (0, import_node_path2.join)(LOCK_DIR, `${port}.lock.tmp`);
+  const lockPath = (0, import_node_path2.join)(LOCK_DIR, `${port}.lock`);
+  (0, import_node_fs2.writeFileSync)(tmp, JSON.stringify({ pid, port, workspaceFolders: [vaultPath], ideName: "Obsidian", transport: "ws", authToken }));
+  (0, import_node_fs2.renameSync)(tmp, lockPath);
 }
 function removeLockFile(port) {
   try {
-    (0, import_node_fs.unlinkSync)((0, import_node_path.join)(LOCK_DIR, `${port}.lock`));
+    (0, import_node_fs2.unlinkSync)((0, import_node_path2.join)(LOCK_DIR, `${port}.lock`));
   } catch {
   }
 }
 function cleanStaleLockFiles() {
   try {
-    for (const file of (0, import_node_fs.readdirSync)(LOCK_DIR).filter((f) => f.endsWith(".lock"))) {
-      const p = (0, import_node_path.join)(LOCK_DIR, file);
+    for (const file of (0, import_node_fs2.readdirSync)(LOCK_DIR).filter((f) => f.endsWith(".lock"))) {
+      const p = (0, import_node_path2.join)(LOCK_DIR, file);
       try {
-        const data = JSON.parse((0, import_node_fs.readFileSync)(p, "utf-8"));
+        const data = JSON.parse((0, import_node_fs2.readFileSync)(p, "utf-8"));
         if (data.ideName !== "Obsidian") continue;
         process.kill(data.pid, 0);
       } catch {
         try {
-          (0, import_node_fs.unlinkSync)(p);
+          (0, import_node_fs2.unlinkSync)(p);
         } catch {
         }
       }
@@ -114,7 +297,7 @@ function makeFrame(opcode, data) {
   }
   return Buffer.concat([header, payload]);
 }
-var ObsidianClaudeMCP = class extends import_obsidian.Plugin {
+var ObsidianClaudeMCP = class extends import_obsidian3.Plugin {
   clients = /* @__PURE__ */ new Set();
   server = null;
   mcpServer = null;
@@ -124,11 +307,14 @@ var ObsidianClaudeMCP = class extends import_obsidian.Plugin {
   broadcastTimer = null;
   prevStateKey = null;
   authToken = "";
+  settings = DEFAULT_SETTINGS;
   async onload() {
+    await this.loadSettings();
+    this.addSettingTab(new ClaudeMCPSettingsTab(this.app, this));
     cleanStaleLockFiles();
     this.authToken = (0, import_node_crypto.randomUUID)();
     this.port = await this.startServer();
-    const vaultPath = this.app.vault.adapter.getBasePath();
+    const vaultPath = this.basePath();
     createLockFile(this.port, process.pid, vaultPath, this.authToken);
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.scheduleBroadcast()));
     this.registerDomEvent(window, "focus", () => {
@@ -140,7 +326,7 @@ var ObsidianClaudeMCP = class extends import_obsidian.Plugin {
       id: "send-to-claude",
       name: "Send to Claude",
       editorCallback: () => {
-        const data = this.getSelectionData();
+        const data = getSelectionData(this.app);
         if (!data) return;
         this.broadcast({ jsonrpc: "2.0", method: "at_mentioned", params: data });
       }
@@ -157,23 +343,24 @@ var ObsidianClaudeMCP = class extends import_obsidian.Plugin {
     this.mcpServer?.close();
     if (this.port) removeLockFile(this.port);
   }
-  getSelectionData() {
-    const view = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
-    if (!view?.file) return null;
-    const editor = view.editor;
-    const basePath = this.app.vault.adapter.getBasePath();
-    const cursor = editor.getCursor();
-    const from = editor.getCursor("from");
-    const to = editor.getCursor("to");
-    const text = editor.getSelection();
-    const rel = view.file.path;
-    return {
-      filePath: basePath + "/" + rel,
-      relativePath: rel.includes(" ") ? `"${rel}"` : rel,
-      cursor: { line: cursor.line, character: cursor.ch },
-      selection: { start: { line: from.line, character: from.ch }, end: { line: to.line, character: to.ch }, isEmpty: text === "", text }
-    };
+  async loadSettings() {
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
   }
+  async saveSettings() {
+    await this.saveData(this.settings);
+  }
+  basePath() {
+    return this.app.vault.adapter.getBasePath();
+  }
+  // ── Tool registry ──────────────────────────────────────────────────────────
+  getActiveTools() {
+    const tools = [...createEditorTools(this.app)];
+    if (this.settings.enabledTools.tasks) {
+      tools.push(createTasksTool(() => this.basePath()));
+    }
+    return tools;
+  }
+  // ── Broadcasting ───────────────────────────────────────────────────────────
   scheduleBroadcast() {
     if (this.broadcastTimer) clearTimeout(this.broadcastTimer);
     this.broadcastTimer = setTimeout(() => {
@@ -182,7 +369,7 @@ var ObsidianClaudeMCP = class extends import_obsidian.Plugin {
     }, 100);
   }
   doBroadcast() {
-    const data = this.getSelectionData();
+    const data = getSelectionData(this.app);
     if (!data) return;
     const key = JSON.stringify({ f: data.filePath, c: data.cursor, s: data.selection });
     if (key === this.prevStateKey) return;
@@ -199,6 +386,42 @@ var ObsidianClaudeMCP = class extends import_obsidian.Plugin {
       if (c.socket.writable) c.socket.write(frame);
     }
   }
+  // ── RPC routing ────────────────────────────────────────────────────────────
+  handleRpc(msg) {
+    const id = msg.id;
+    const tools = this.getActiveTools();
+    switch (msg.method) {
+      case "initialize":
+        return {
+          jsonrpc: "2.0",
+          id,
+          result: {
+            protocolVersion: msg.params?.protocolVersion || "2025-03-26",
+            capabilities: { tools: {} },
+            serverInfo: { name: "obsidian-claude-mcp", version: this.manifest.version }
+          }
+        };
+      case "tools/list":
+        return {
+          jsonrpc: "2.0",
+          id,
+          result: {
+            tools: tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }))
+          }
+        };
+      case "tools/call": {
+        const name = msg.params?.name;
+        const tool = tools.find((t) => t.name === name);
+        if (!tool) return { jsonrpc: "2.0", id, error: { code: -32601, message: `Tool not found: ${name}` } };
+        return { jsonrpc: "2.0", id, result: tool.call(msg.params) };
+      }
+      default:
+        if (["openDiff", "getDiagnostics", "checkDocumentDirty", "saveDocument", "close_tab", "closeAllDiffTabs", "executeCode"].includes(msg.method))
+          return { jsonrpc: "2.0", id, result: { content: [{ type: "text", text: "{}" }] } };
+        return { jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } };
+    }
+  }
+  // ── WebSocket server ───────────────────────────────────────────────────────
   handleClient(socket, headers) {
     if (headers["x-claude-code-ide-authorization"] !== this.authToken) {
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
@@ -248,127 +471,43 @@ Sec-WebSocket-Accept: ${computeAcceptKey(wsKey)}\r
         try {
           const msg = JSON.parse(frame.payload.toString());
           if (msg.id == null) continue;
-          const response = this.handleRpc(msg);
-          client.socket.write(makeFrame(OPCODE.TEXT, JSON.stringify(response)));
+          client.socket.write(makeFrame(OPCODE.TEXT, JSON.stringify(this.handleRpc(msg))));
         } catch {
           client.socket.write(makeFrame(OPCODE.TEXT, JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } })));
         }
       }
     }
   }
-  handleRpc(msg) {
-    const id = msg.id;
-    switch (msg.method) {
-      case "initialize":
-        return { jsonrpc: "2.0", id, result: { protocolVersion: msg.params?.protocolVersion || "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "obsidian-claude-mcp", version: this.manifest.version } } };
-      case "tools/list":
-        return { jsonrpc: "2.0", id, result: { tools: [
-          { name: "getCurrentSelection", description: "Get the current selection in the active editor", inputSchema: { type: "object", properties: {} } },
-          { name: "getLatestSelection", description: "Get the most recent selection", inputSchema: { type: "object", properties: {} } },
-          { name: "getOpenEditors", description: "Get all open editor tabs", inputSchema: { type: "object", properties: {} } },
-          { name: "getWorkspaceFolders", description: "Get vault path", inputSchema: { type: "object", properties: {} } },
-          { name: "getTasks", description: "Get all pending tasks from the vault, grouped by overdue, today, this week, future, and undated. Reads from the Task Board plugin cache.", inputSchema: { type: "object", properties: {} } }
-        ] } };
-      case "tools/call": {
-        const name = msg.params?.name;
-        const result = this.handleTool(name);
-        if (!result) return { jsonrpc: "2.0", id, error: { code: -32601, message: `Tool not found: ${name}` } };
-        return { jsonrpc: "2.0", id, result };
-      }
-      default:
-        if (["openDiff", "getDiagnostics", "checkDocumentDirty", "saveDocument", "close_tab", "closeAllDiffTabs", "executeCode"].includes(msg.method))
-          return { jsonrpc: "2.0", id, result: { content: [{ type: "text", text: "{}" }] } };
-        return { jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } };
-    }
-  }
-  handleTool(name) {
-    const wrap = (data) => ({ content: [{ type: "text", text: JSON.stringify(data) }] });
-    const basePath = this.app.vault.adapter.getBasePath();
-    switch (name) {
-      case "getCurrentSelection": {
-        const d = this.getSelectionData();
-        return d ? wrap(d) : wrap({ error: "no active file" });
-      }
-      case "getLatestSelection": {
-        const d = this.getSelectionData();
-        return d ? wrap(d) : wrap({ error: "no selection tracked yet" });
-      }
-      case "getOpenEditors": {
-        const leaves = this.app.workspace.getLeavesOfType("markdown");
-        const active = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
-        return wrap({ tabs: leaves.filter((l) => l.view.file).map((l) => {
-          const file = l.view.file;
-          return { uri: "file://" + basePath + "/" + file.path, isActive: l.view === active, label: file.basename, languageId: "markdown" };
-        }) });
-      }
-      case "getWorkspaceFolders":
-        return wrap({ folders: [basePath] });
-      case "getTasks":
-        return this.getTasksFromCache(basePath);
-      default:
-        return null;
-    }
-  }
-  getTasksFromCache(basePath) {
-    const wrap = (data) => ({ content: [{ type: "text", text: JSON.stringify(data) }] });
-    try {
-      const cachePath = (0, import_node_path.join)(basePath, ".obsidian", "plugins", "task-board", "tasks.json");
-      const raw = (0, import_node_fs.readFileSync)(cachePath, "utf-8");
-      const cache = JSON.parse(raw);
-      const today = /* @__PURE__ */ new Date();
-      today.setHours(0, 0, 0, 0);
-      const todayStr = today.toISOString().split("T")[0];
-      const weekEnd = new Date(today);
-      weekEnd.setDate(today.getDate() + 7);
-      const weekEndStr = weekEnd.toISOString().split("T")[0];
-      const overdue = [];
-      const dueToday = [];
-      const dueThisWeek = [];
-      const future = [];
-      const undated = [];
-      const pending = cache.Pending;
-      for (const tasks of Object.values(pending)) {
-        for (const task of tasks) {
-          const t = {
-            id: task.id,
-            title: task.title.replace(/^-\s*\[.\]\s*/, "").replace(/📅.*$/, "").trim(),
-            due: task.due || null,
-            priority: task.priority,
-            tags: task.tags,
-            file: task.filePath
-          };
-          if (!task.due) {
-            undated.push(t);
-          } else if (task.due < todayStr) {
-            overdue.push(t);
-          } else if (task.due === todayStr) {
-            dueToday.push(t);
-          } else if (task.due <= weekEndStr) {
-            dueThisWeek.push(t);
-          } else {
-            future.push(t);
-          }
-        }
-      }
-      return wrap({
-        asOf: cache.Modified_at,
-        summary: {
-          overdue: overdue.length,
-          today: dueToday.length,
-          thisWeek: dueThisWeek.length,
-          future: future.length,
-          undated: undated.length
-        },
-        overdue,
-        today: dueToday,
-        thisWeek: dueThisWeek,
-        future,
-        undated
+  startServer() {
+    return new Promise((resolve, reject) => {
+      this.server = (0, import_node_http.createServer)((_req, res) => {
+        res.writeHead(400);
+        res.end();
       });
-    } catch (e) {
-      return { content: [{ type: "text", text: JSON.stringify({ error: "Could not read task cache", detail: String(e) }) }] };
-    }
+      this.server.on("upgrade", (req, socket, head) => {
+        const s = socket;
+        if (head.length > 0) s.unshift(head);
+        this.handleClient(s, req.headers);
+      });
+      this.server.on("error", reject);
+      this.server.listen(0, "127.0.0.1", () => {
+        const addr = this.server.address();
+        this.pingInterval = setInterval(() => {
+          for (const c of this.clients) {
+            if (!c.alive) {
+              c.socket.destroy();
+              this.clients.delete(c);
+              continue;
+            }
+            c.alive = false;
+            if (c.socket.writable) c.socket.write(makeFrame(OPCODE.PING, Buffer.alloc(0)));
+          }
+        }, 3e4);
+        resolve(addr.port);
+      });
+    });
   }
+  // ── MCP HTTP/SSE server ────────────────────────────────────────────────────
   isLocalhostRequest(req, res) {
     const host = Array.isArray(req.headers["host"]) ? req.headers["host"][0] : req.headers["host"];
     if (host !== `127.0.0.1:${MCP_HTTP_PORT}`) {
@@ -432,34 +571,5 @@ data: ${JSON.stringify(this.handleRpc(msg))}
       "127.0.0.1",
       () => console.log(`[claude-mcp] MCP HTTP server on 127.0.0.1:${MCP_HTTP_PORT}`)
     );
-  }
-  startServer() {
-    return new Promise((resolve, reject) => {
-      this.server = (0, import_node_http.createServer)((_req, res) => {
-        res.writeHead(400);
-        res.end();
-      });
-      this.server.on("upgrade", (req, socket, head) => {
-        const s = socket;
-        if (head.length > 0) s.unshift(head);
-        this.handleClient(s, req.headers);
-      });
-      this.server.on("error", reject);
-      this.server.listen(0, "127.0.0.1", () => {
-        const addr = this.server.address();
-        this.pingInterval = setInterval(() => {
-          for (const c of this.clients) {
-            if (!c.alive) {
-              c.socket.destroy();
-              this.clients.delete(c);
-              continue;
-            }
-            c.alive = false;
-            if (c.socket.writable) c.socket.write(makeFrame(OPCODE.PING, Buffer.alloc(0)));
-          }
-        }, 3e4);
-        resolve(addr.port);
-      });
-    });
   }
 };
