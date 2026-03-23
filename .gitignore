@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Build output (compiled by esbuild — committed intentionally for Obsidian manual install)
+# main.js is kept tracked so users can install without building from source
+
+# Debug / temp
+/tmp/mcp-debug.log
+
+# Editor
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
+
+# Environment files
+.env
+.env.*
