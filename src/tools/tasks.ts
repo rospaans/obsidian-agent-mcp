@@ -17,11 +17,13 @@ export function createTasksTool(getBasePath: () => string): ToolDefinition {
 
         const today = new Date();
         today.setHours(0, 0, 0, 0);
-        const todayStr = today.toISOString().split("T")[0];
+        const pad = (n: number) => String(n).padStart(2, "0");
+        const localDate = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+        const todayStr = localDate(today);
 
         const weekEnd = new Date(today);
         weekEnd.setDate(today.getDate() + 7);
-        const weekEndStr = weekEnd.toISOString().split("T")[0];
+        const weekEndStr = localDate(weekEnd);
 
         const overdue: object[] = [];
         const dueToday: object[] = [];

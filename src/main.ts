@@ -7,7 +7,7 @@ import { writeFileSync, renameSync, unlinkSync, readdirSync, readFileSync, mkdir
 import { join } from "node:path";
 import { homedir } from "node:os";
 
-import { DEFAULT_SETTINGS, ClaudeMCPSettingsTab, type PluginSettings } from "./settings";
+import { DEFAULT_SETTINGS, AgentMCPSettingsTab, type PluginSettings } from "./settings";
 import { createEditorTools, getSelectionData } from "./tools/editor";
 import { createTasksTool } from "./tools/tasks";
 import type { ToolDefinition } from "./tools/types";
@@ -20,6 +20,13 @@ const OPCODE = { TEXT: 0x1, CLOSE: 0x8, PING: 0x9, PONG: 0xa } as const;
 // ── MCP HTTP server ──────────────────────────────────────────────────────────
 
 const MCP_HTTP_PORT = 27183;
+const DEFAULT_MCP_PROTOCOL_VERSION = "2025-03-26";
+const SUPPORTED_MCP_PROTOCOL_VERSIONS = new Set([
+  "2024-11-05",
+  "2025-03-26",
+  "2025-06-18",
+  "2025-11-25",
+]);
 
 // ── Lock file ────────────────────────────────────────────────────────────────
 
@@ -89,22 +96,24 @@ function makeFrame(opcode: number, data: string | Buffer): Buffer {
 
 interface Client { socket: Socket; buffer: Buffer; alive: boolean; }
 
-export default class ObsidianClaudeMCP extends Plugin {
+export default class ObsidianAgentMCP extends Plugin {
   private clients = new Set<Client>();
   private server: Server | null = null;
   private mcpServer: Server | null = null;
   private mcpSessions = new Map<string, ServerResponse>();
+  private codexSseSessions = new Set<ServerResponse>();
   private port = 0;
   private pingInterval: ReturnType<typeof setInterval> | null = null;
   private broadcastTimer: ReturnType<typeof setTimeout> | null = null;
   private prevStateKey: string | null = null;
   private authToken = "";
+  private latestSelection = getSelectionData(this.app);
 
   settings: PluginSettings = DEFAULT_SETTINGS;
 
   async onload() {
     await this.loadSettings();
-    this.addSettingTab(new ClaudeMCPSettingsTab(this.app, this));
+    this.addSettingTab(new AgentMCPSettingsTab(this.app, this));
 
     cleanStaleLockFiles();
     this.authToken = randomUUID();
@@ -120,7 +129,7 @@ export default class ObsidianClaudeMCP extends Plugin {
       id: "send-to-claude",
       name: "Send to Claude",
       editorCallback: () => {
-        const data = getSelectionData(this.app);
+        const data = this.captureSelection();
         if (!data) return;
         this.broadcast({ jsonrpc: "2.0", method: "at_mentioned", params: data });
       },
@@ -155,7 +164,7 @@ export default class ObsidianClaudeMCP extends Plugin {
   // ── Tool registry ──────────────────────────────────────────────────────────
 
   private getActiveTools(): ToolDefinition[] {
-    const tools: ToolDefinition[] = [...createEditorTools(this.app)];
+    const tools: ToolDefinition[] = [...createEditorTools(this.app, () => this.latestSelection)];
     if (this.settings.enabledTools.tasks) {
       tools.push(createTasksTool(() => this.basePath()));
     }
@@ -170,7 +179,7 @@ export default class ObsidianClaudeMCP extends Plugin {
   }
 
   private doBroadcast() {
-    const data = getSelectionData(this.app);
+    const data = this.captureSelection();
     if (!data) return;
     const key = JSON.stringify({ f: data.filePath, c: data.cursor, s: data.selection });
     if (key === this.prevStateKey) return;
@@ -184,6 +193,17 @@ export default class ObsidianClaudeMCP extends Plugin {
   private broadcast(msg: object) {
     const frame = makeFrame(OPCODE.TEXT, JSON.stringify(msg));
     for (const c of this.clients) { if (c.socket.writable) c.socket.write(frame); }
+    const sseData = `event: message\ndata: ${JSON.stringify(msg)}\n\n`;
+    for (const res of this.codexSseSessions) {
+      if (!res.writableEnded) res.write(sseData);
+      else this.codexSseSessions.delete(res);
+    }
+  }
+
+  private captureSelection() {
+    const data = getSelectionData(this.app);
+    if (data) this.latestSelection = data;
+    return data;
   }
 
   // ── RPC routing ────────────────────────────────────────────────────────────
@@ -199,7 +219,7 @@ export default class ObsidianClaudeMCP extends Plugin {
           result: {
             protocolVersion: (msg.params?.protocolVersion as string) || "2025-03-26",
             capabilities: { tools: {} },
-            serverInfo: { name: "obsidian-claude-mcp", version: this.manifest.version },
+            serverInfo: { name: "obsidian-agent-mcp", version: this.manifest.version },
           },
         };
 
@@ -295,7 +315,7 @@ export default class ObsidianClaudeMCP extends Plugin {
   private isLocalhostRequest(req: IncomingMessage, res: ServerResponse): boolean {
     // Block DNS-rebinding: the Host header must be our exact bind address.
     const host = Array.isArray(req.headers["host"]) ? req.headers["host"][0] : req.headers["host"];
-    if (host !== `127.0.0.1:${MCP_HTTP_PORT}`) {
+    if (!host || !new Set([`127.0.0.1:${MCP_HTTP_PORT}`, `localhost:${MCP_HTTP_PORT}`]).has(host)) {
       res.writeHead(403); res.end(); return false;
     }
     // Block browser-based requests: legitimate MCP clients (Claude Desktop, curl)
@@ -307,14 +327,98 @@ export default class ObsidianClaudeMCP extends Plugin {
     return true;
   }
 
+  private getProtocolVersionHeader(req: IncomingMessage): string {
+    const raw = Array.isArray(req.headers["mcp-protocol-version"])
+      ? req.headers["mcp-protocol-version"][0]
+      : req.headers["mcp-protocol-version"];
+    if (raw == null || raw === "") return DEFAULT_MCP_PROTOCOL_VERSION;
+    return SUPPORTED_MCP_PROTOCOL_VERSIONS.has(raw) ? raw : DEFAULT_MCP_PROTOCOL_VERSION;
+  }
+
+  private parseJsonRpcBody(body: string): unknown {
+    return JSON.parse(body);
+  }
+
+  private handleStreamableHttpPayload(payload: unknown): { status: number; body?: string } {
+    const messages = Array.isArray(payload) ? payload : [payload];
+    const responses: object[] = [];
+
+    for (const msg of messages) {
+      if (!msg || typeof msg !== "object") return { status: 400 };
+      const rpc = msg as { jsonrpc?: unknown; id?: unknown; method?: unknown; params?: Record<string, unknown> };
+      if (rpc.jsonrpc !== "2.0") return { status: 400 };
+      if (typeof rpc.method !== "string" || rpc.id == null) continue;
+      responses.push(this.handleRpc({
+        jsonrpc: "2.0",
+        id: rpc.id,
+        method: rpc.method,
+        params: rpc.params,
+      }));
+    }
+
+    if (responses.length === 0) return { status: 202 };
+    return {
+      status: 200,
+      body: JSON.stringify(Array.isArray(payload) ? responses : responses[0]),
+    };
+  }
+
   private startMcpHttpServer() {
     this.mcpServer = createServer((req: IncomingMessage, res: ServerResponse) => {
       if (!this.isLocalhostRequest(req, res)) return;
+      const protocolVersion = this.getProtocolVersionHeader(req);
       const url = new URL(req.url ?? "/", `http://127.0.0.1:${MCP_HTTP_PORT}`);
+
+      if (url.pathname === "/mcp" && req.method === "GET") {
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive",
+          "MCP-Protocol-Version": protocolVersion,
+        });
+        this.codexSseSessions.add(res);
+        req.on("close", () => this.codexSseSessions.delete(res));
+        res.write(": keepalive\n\n");
+        return;
+      }
+
+      if (url.pathname === "/mcp" && req.method === "POST") {
+        let body = "";
+        req.on("data", (chunk: Buffer) => body += chunk.toString());
+        req.on("end", () => {
+          try {
+            const result = this.handleStreamableHttpPayload(this.parseJsonRpcBody(body));
+            if (result.status === 200) {
+              res.writeHead(200, {
+                "Content-Type": "application/json",
+                "MCP-Protocol-Version": protocolVersion,
+              });
+              res.end(result.body);
+              return;
+            }
+
+            res.writeHead(result.status, {
+              "MCP-Protocol-Version": protocolVersion,
+            });
+            res.end();
+          } catch {
+            res.writeHead(400, {
+              "MCP-Protocol-Version": protocolVersion,
+            });
+            res.end();
+          }
+        });
+        return;
+      }
 
       if (url.pathname === "/sse" && req.method === "GET") {
         const sessionId = randomUUID();
-        res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive" });
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive",
+          "MCP-Protocol-Version": protocolVersion,
+        });
         this.mcpSessions.set(sessionId, res);
         res.write(`event: endpoint\ndata: http://127.0.0.1:${MCP_HTTP_PORT}/message?sessionId=${sessionId}\n\n`);
         req.on("close", () => this.mcpSessions.delete(sessionId));
@@ -328,16 +432,16 @@ export default class ObsidianClaudeMCP extends Plugin {
         req.on("end", () => {
           try {
             const msg = JSON.parse(body);
-            res.writeHead(202); res.end();
+            res.writeHead(202, { "MCP-Protocol-Version": protocolVersion }); res.end();
             if (msg.id != null && sseRes && !sseRes.writableEnded) {
               sseRes.write(`event: message\ndata: ${JSON.stringify(this.handleRpc(msg))}\n\n`);
             }
-          } catch { res.writeHead(400); res.end(); }
+          } catch { res.writeHead(400, { "MCP-Protocol-Version": protocolVersion }); res.end(); }
         });
         return;
       }
 
-      res.writeHead(404); res.end();
+      res.writeHead(404, { "MCP-Protocol-Version": protocolVersion }); res.end();
     });
     this.mcpServer.on("error", (err: NodeJS.ErrnoException) => {
       if (err.code !== "EADDRINUSE") console.error("[claude-mcp] MCP HTTP error:", err);

@@ -20,7 +20,7 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 // src/main.ts
 var main_exports = {};
 __export(main_exports, {
-  default: () => ObsidianClaudeMCP
+  default: () => ObsidianAgentMCP
 });
 module.exports = __toCommonJS(main_exports);
 var import_obsidian3 = require("obsidian");
@@ -38,7 +38,7 @@ var DEFAULT_SETTINGS = {
     tasks: true
   }
 };
-var ClaudeMCPSettingsTab = class extends import_obsidian.PluginSettingTab {
+var AgentMCPSettingsTab = class extends import_obsidian.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -46,7 +46,7 @@ var ClaudeMCPSettingsTab = class extends import_obsidian.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Claude MCP" });
+    containerEl.createEl("h2", { text: "Agent MCP" });
     containerEl.createEl("h3", { text: "Tools" });
     new import_obsidian.Setting(containerEl).setName("Task Board integration").setDesc(
       "Expose a getTasks tool that reads pending tasks from the Task Board plugin cache. Disable this if you are not using the Task Board plugin."
@@ -90,32 +90,23 @@ function getSelectionData(app) {
     }
   };
 }
-function createEditorTools(app) {
+function createEditorTools(app, getLatestSelection) {
   function basePath() {
     return app.vault.adapter.getBasePath();
   }
   return [
     {
-      name: "getCurrentSelection",
-      description: "Get the current selection in the active editor",
-      inputSchema: { type: "object", properties: {} },
-      call() {
-        const d = getSelectionData(app);
-        return d ? wrap(d) : wrap({ error: "no active file" });
-      }
-    },
-    {
       name: "getLatestSelection",
-      description: "Get the most recent selection",
+      description: "The primary tool for finding out what the user has open in Obsidian. Returns the file path, cursor position, and selected text for the note the user was last working in. Works whether or not the Obsidian editor is currently focused \u2014 it returns the cached last-known state when focus is elsewhere (e.g. the user switched to a terminal to type a message) and falls back to the live state when Obsidian is focused. Always call this first when the user asks about their current file, selection, or context.",
       inputSchema: { type: "object", properties: {} },
       call() {
-        const d = getSelectionData(app);
+        const d = getLatestSelection() ?? getSelectionData(app);
         return d ? wrap(d) : wrap({ error: "no selection tracked yet" });
       }
     },
     {
       name: "getOpenEditors",
-      description: "Get all open editor tabs",
+      description: "Returns all open markdown tabs in the Obsidian workspace. Each tab has a file URI, display label, languageId ('markdown'), and an isActive flag. isActive is true only when the Obsidian editor window is focused \u2014 it will be false for every tab when the user is in a terminal. Only call this when you need the full list of open tabs; to find the user's current file, use getLatestSelection instead.",
       inputSchema: { type: "object", properties: {} },
       call() {
         const base = basePath();
@@ -136,7 +127,7 @@ function createEditorTools(app) {
     },
     {
       name: "getWorkspaceFolders",
-      description: "Get vault path",
+      description: "Returns the absolute path to the Obsidian vault root. Use this to resolve relative file paths returned by other tools.",
       inputSchema: { type: "object", properties: {} },
       call() {
         return wrap({ folders: [basePath()] });
@@ -160,10 +151,12 @@ function createTasksTool(getBasePath) {
         const cache = JSON.parse((0, import_node_fs.readFileSync)(cachePath, "utf-8"));
         const today = /* @__PURE__ */ new Date();
         today.setHours(0, 0, 0, 0);
-        const todayStr = today.toISOString().split("T")[0];
+        const pad = (n) => String(n).padStart(2, "0");
+        const localDate = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+        const todayStr = localDate(today);
         const weekEnd = new Date(today);
         weekEnd.setDate(today.getDate() + 7);
-        const weekEndStr = weekEnd.toISOString().split("T")[0];
+        const weekEndStr = localDate(weekEnd);
         const overdue = [];
         const dueToday = [];
         const dueThisWeek = [];
@@ -216,6 +209,13 @@ function createTasksTool(getBasePath) {
 var GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 var OPCODE = { TEXT: 1, CLOSE: 8, PING: 9, PONG: 10 };
 var MCP_HTTP_PORT = 27183;
+var DEFAULT_MCP_PROTOCOL_VERSION = "2025-03-26";
+var SUPPORTED_MCP_PROTOCOL_VERSIONS = /* @__PURE__ */ new Set([
+  "2024-11-05",
+  "2025-03-26",
+  "2025-06-18",
+  "2025-11-25"
+]);
 var LOCK_DIR = (0, import_node_path2.join)((0, import_node_os.homedir)(), ".claude", "ide");
 function createLockFile(port, pid, vaultPath, authToken) {
   (0, import_node_fs2.mkdirSync)(LOCK_DIR, { recursive: true });
@@ -297,20 +297,22 @@ function makeFrame(opcode, data) {
   }
   return Buffer.concat([header, payload]);
 }
-var ObsidianClaudeMCP = class extends import_obsidian3.Plugin {
+var ObsidianAgentMCP = class extends import_obsidian3.Plugin {
   clients = /* @__PURE__ */ new Set();
   server = null;
   mcpServer = null;
   mcpSessions = /* @__PURE__ */ new Map();
+  codexSseSessions = /* @__PURE__ */ new Set();
   port = 0;
   pingInterval = null;
   broadcastTimer = null;
   prevStateKey = null;
   authToken = "";
+  latestSelection = getSelectionData(this.app);
   settings = DEFAULT_SETTINGS;
   async onload() {
     await this.loadSettings();
-    this.addSettingTab(new ClaudeMCPSettingsTab(this.app, this));
+    this.addSettingTab(new AgentMCPSettingsTab(this.app, this));
     cleanStaleLockFiles();
     this.authToken = (0, import_node_crypto.randomUUID)();
     this.port = await this.startServer();
@@ -326,7 +328,7 @@ var ObsidianClaudeMCP = class extends import_obsidian3.Plugin {
       id: "send-to-claude",
       name: "Send to Claude",
       editorCallback: () => {
-        const data = getSelectionData(this.app);
+        const data = this.captureSelection();
         if (!data) return;
         this.broadcast({ jsonrpc: "2.0", method: "at_mentioned", params: data });
       }
@@ -354,7 +356,7 @@ var ObsidianClaudeMCP = class extends import_obsidian3.Plugin {
   }
   // ── Tool registry ──────────────────────────────────────────────────────────
   getActiveTools() {
-    const tools = [...createEditorTools(this.app)];
+    const tools = [...createEditorTools(this.app, () => this.latestSelection)];
     if (this.settings.enabledTools.tasks) {
       tools.push(createTasksTool(() => this.basePath()));
     }
@@ -369,7 +371,7 @@ var ObsidianClaudeMCP = class extends import_obsidian3.Plugin {
     }, 100);
   }
   doBroadcast() {
-    const data = getSelectionData(this.app);
+    const data = this.captureSelection();
     if (!data) return;
     const key = JSON.stringify({ f: data.filePath, c: data.cursor, s: data.selection });
     if (key === this.prevStateKey) return;
@@ -385,6 +387,19 @@ var ObsidianClaudeMCP = class extends import_obsidian3.Plugin {
     for (const c of this.clients) {
       if (c.socket.writable) c.socket.write(frame);
     }
+    const sseData = `event: message
+data: ${JSON.stringify(msg)}
+
+`;
+    for (const res of this.codexSseSessions) {
+      if (!res.writableEnded) res.write(sseData);
+      else this.codexSseSessions.delete(res);
+    }
+  }
+  captureSelection() {
+    const data = getSelectionData(this.app);
+    if (data) this.latestSelection = data;
+    return data;
   }
   // ── RPC routing ────────────────────────────────────────────────────────────
   handleRpc(msg) {
@@ -398,7 +413,7 @@ var ObsidianClaudeMCP = class extends import_obsidian3.Plugin {
           result: {
             protocolVersion: msg.params?.protocolVersion || "2025-03-26",
             capabilities: { tools: {} },
-            serverInfo: { name: "obsidian-claude-mcp", version: this.manifest.version }
+            serverInfo: { name: "obsidian-agent-mcp", version: this.manifest.version }
           }
         };
       case "tools/list":
@@ -510,7 +525,7 @@ Sec-WebSocket-Accept: ${computeAcceptKey(wsKey)}\r
   // ── MCP HTTP/SSE server ────────────────────────────────────────────────────
   isLocalhostRequest(req, res) {
     const host = Array.isArray(req.headers["host"]) ? req.headers["host"][0] : req.headers["host"];
-    if (host !== `127.0.0.1:${MCP_HTTP_PORT}`) {
+    if (!host || !(/* @__PURE__ */ new Set([`127.0.0.1:${MCP_HTTP_PORT}`, `localhost:${MCP_HTTP_PORT}`])).has(host)) {
       res.writeHead(403);
       res.end();
       return false;
@@ -523,13 +538,87 @@ Sec-WebSocket-Accept: ${computeAcceptKey(wsKey)}\r
     }
     return true;
   }
+  getProtocolVersionHeader(req) {
+    const raw = Array.isArray(req.headers["mcp-protocol-version"]) ? req.headers["mcp-protocol-version"][0] : req.headers["mcp-protocol-version"];
+    if (raw == null || raw === "") return DEFAULT_MCP_PROTOCOL_VERSION;
+    return SUPPORTED_MCP_PROTOCOL_VERSIONS.has(raw) ? raw : DEFAULT_MCP_PROTOCOL_VERSION;
+  }
+  parseJsonRpcBody(body) {
+    return JSON.parse(body);
+  }
+  handleStreamableHttpPayload(payload) {
+    const messages = Array.isArray(payload) ? payload : [payload];
+    const responses = [];
+    for (const msg of messages) {
+      if (!msg || typeof msg !== "object") return { status: 400 };
+      const rpc = msg;
+      if (rpc.jsonrpc !== "2.0") return { status: 400 };
+      if (typeof rpc.method !== "string" || rpc.id == null) continue;
+      responses.push(this.handleRpc({
+        jsonrpc: "2.0",
+        id: rpc.id,
+        method: rpc.method,
+        params: rpc.params
+      }));
+    }
+    if (responses.length === 0) return { status: 202 };
+    return {
+      status: 200,
+      body: JSON.stringify(Array.isArray(payload) ? responses : responses[0])
+    };
+  }
   startMcpHttpServer() {
     this.mcpServer = (0, import_node_http.createServer)((req, res) => {
       if (!this.isLocalhostRequest(req, res)) return;
+      const protocolVersion = this.getProtocolVersionHeader(req);
       const url = new URL(req.url ?? "/", `http://127.0.0.1:${MCP_HTTP_PORT}`);
+      if (url.pathname === "/mcp" && req.method === "GET") {
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive",
+          "MCP-Protocol-Version": protocolVersion
+        });
+        this.codexSseSessions.add(res);
+        req.on("close", () => this.codexSseSessions.delete(res));
+        res.write(": keepalive\n\n");
+        return;
+      }
+      if (url.pathname === "/mcp" && req.method === "POST") {
+        let body = "";
+        req.on("data", (chunk) => body += chunk.toString());
+        req.on("end", () => {
+          try {
+            const result = this.handleStreamableHttpPayload(this.parseJsonRpcBody(body));
+            if (result.status === 200) {
+              res.writeHead(200, {
+                "Content-Type": "application/json",
+                "MCP-Protocol-Version": protocolVersion
+              });
+              res.end(result.body);
+              return;
+            }
+            res.writeHead(result.status, {
+              "MCP-Protocol-Version": protocolVersion
+            });
+            res.end();
+          } catch {
+            res.writeHead(400, {
+              "MCP-Protocol-Version": protocolVersion
+            });
+            res.end();
+          }
+        });
+        return;
+      }
       if (url.pathname === "/sse" && req.method === "GET") {
         const sessionId = (0, import_node_crypto.randomUUID)();
-        res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive" });
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive",
+          "MCP-Protocol-Version": protocolVersion
+        });
         this.mcpSessions.set(sessionId, res);
         res.write(`event: endpoint
 data: http://127.0.0.1:${MCP_HTTP_PORT}/message?sessionId=${sessionId}
@@ -545,7 +634,7 @@ data: http://127.0.0.1:${MCP_HTTP_PORT}/message?sessionId=${sessionId}
         req.on("end", () => {
           try {
             const msg = JSON.parse(body);
-            res.writeHead(202);
+            res.writeHead(202, { "MCP-Protocol-Version": protocolVersion });
             res.end();
             if (msg.id != null && sseRes && !sseRes.writableEnded) {
               sseRes.write(`event: message
@@ -554,13 +643,13 @@ data: ${JSON.stringify(this.handleRpc(msg))}
 `);
             }
           } catch {
-            res.writeHead(400);
+            res.writeHead(400, { "MCP-Protocol-Version": protocolVersion });
             res.end();
           }
         });
         return;
       }
-      res.writeHead(404);
+      res.writeHead(404, { "MCP-Protocol-Version": protocolVersion });
       res.end();
     });
     this.mcpServer.on("error", (err) => {

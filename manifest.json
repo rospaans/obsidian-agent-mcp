@@ -1,6 +1,6 @@
 {
-  "id": "obsidian-claude-mcp",
-  "name": "Claude MCP",
+  "id": "obsidian-agent-mcp",
+  "name": "Agent MCP",
   "version": "1.0.0",
   "minAppVersion": "1.0.0",
   "description": "Connects Obsidian to Claude Code.",

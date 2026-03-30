@@ -1,5 +1,5 @@
 import { App, PluginSettingTab, Setting } from "obsidian";
-import type ObsidianClaudeMCP from "./main";
+import type ObsidianAgentMCP from "./main";
 
 export interface PluginSettings {
   enabledTools: {
@@ -14,8 +14,8 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   },
 };
 
-export class ClaudeMCPSettingsTab extends PluginSettingTab {
-  constructor(app: App, private plugin: ObsidianClaudeMCP) {
+export class AgentMCPSettingsTab extends PluginSettingTab {
+  constructor(app: App, private plugin: ObsidianAgentMCP) {
     super(app, plugin);
   }
 
@@ -23,7 +23,7 @@ export class ClaudeMCPSettingsTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl("h2", { text: "Claude MCP" });
+    containerEl.createEl("h2", { text: "Agent MCP" });
     containerEl.createEl("h3", { text: "Tools" });
 
     new Setting(containerEl)

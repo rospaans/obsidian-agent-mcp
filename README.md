@@ -1,8 +1,8 @@
-# obsidian-claude-mcp
+# obsidian-agent-mcp
 
->This is a personal project Vibe-coded for fun. It connects Claude Code to Obsidian the same way it connects to VS Code. The goal is to be able to use LLMs to handle the brunt work in maintaining a knowledge base or task manager. (or both :)) 
+>This is a personal project Vibe-coded for fun. It connects Obsidian to coding agents like Claude Code and Codex so they can work with your vault context. The goal is to be able to use LLMs to handle the brunt work in maintaining a knowledge base or task manager. (or both :)) 
 
-It exposes two local MCP interfaces (WebSocket + HTTP/SSE) that Claude Code connects to automatically, and is designed to be extended with your own tools.
+It exposes local integration points for both Claude Code and Codex, and is designed to be extended with your own tools.
 
 ---
 
@@ -14,9 +14,10 @@ It exposes two local MCP interfaces (WebSocket + HTTP/SSE) that Claude Code conn
 - Streams your active file path and text selection to Claude Code as you navigate
 - Adds a **"Send to Claude"** command to explicitly push your current selection as context
 
-### MCP HTTP/SSE server
-- Runs a second local MCP server on `127.0.0.1:27183` (SSE transport)
-- Exposes the same tools over HTTP so Claude can also connect via the MCP protocol directly (e.g. from `claude_desktop_config.json`)
+### MCP HTTP server
+- Runs a second local MCP server on `127.0.0.1:27183`
+- Exposes a modern Streamable HTTP endpoint at `/mcp` for Codex
+- Preserves the older HTTP/SSE endpoints for Claude Desktop and other legacy MCP clients
 
 ### MCP tools exposed
 
@@ -53,15 +54,15 @@ Scans all tasks across your vault and displays them on a Kanban-style board with
 ### Option A: Manual install (no build required)
 
 1. Download `main.js` and `manifest.json` from the [latest release](../../releases/latest)
-2. Create the folder `.obsidian/plugins/obsidian-claude-mcp/` inside your vault
+2. Create the folder `.obsidian/plugins/obsidian-agent-mcp/` inside your vault
 3. Copy both files into that folder
 4. Go to **Obsidian → Settings → Community plugins** → refresh → toggle **Claude MCP** on
 
 ### Option B: Build from source
 
 ```bash
-git clone https://github.com/rospaans/obsidian-claude-mcp
-cd obsidian-claude-mcp
+git clone https://github.com/rospaans/obsidian-agent-mcp
+cd obsidian-agent-mcp
 npm install
 cp .env.example .env          # edit to point at your vault's plugin folder
 npm run build
@@ -82,6 +83,21 @@ Then enable the plugin in Obsidian as above.
 5. Claude now sees your active file and selection in real time and can query your task list
 
 Use the command palette command **"Send to Claude"** to explicitly push your current selection as a context mention.
+
+### With Codex CLI
+
+Codex does not use Claude's lock-file discovery flow, but it can connect to the same Obsidian tools over MCP.
+
+1. Enable the plugin in Obsidian
+2. Register the MCP endpoint with Codex:
+
+```bash
+codex mcp add obsidian --url http://127.0.0.1:27183/mcp
+```
+
+3. Start `codex`
+4. Use `/mcp` inside Codex to confirm the server is connected
+5. Codex can now call the same Obsidian tools, including `getLatestSelection`, even after focus moves to the terminal
 
 ### With a local model via Ollama
 

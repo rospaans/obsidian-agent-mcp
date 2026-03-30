@@ -36,33 +36,32 @@ export function getSelectionData(app: App): SelectionData | null {
   };
 }
 
-export function createEditorTools(app: App): ToolDefinition[] {
+export function createEditorTools(app: App, getLatestSelection: () => SelectionData | null): ToolDefinition[] {
   function basePath() {
     return (app.vault.adapter as FileSystemAdapter).getBasePath();
   }
 
   return [
     {
-      name: "getCurrentSelection",
-      description: "Get the current selection in the active editor",
-      inputSchema: { type: "object", properties: {} },
-      call(): ToolResult {
-        const d = getSelectionData(app);
-        return d ? wrap(d) : wrap({ error: "no active file" });
-      },
-    },
-    {
       name: "getLatestSelection",
-      description: "Get the most recent selection",
+      description:
+        "The primary tool for finding out what the user has open in Obsidian. " +
+        "Returns the file path, cursor position, and selected text for the note the user was last working in. " +
+        "Works whether or not the Obsidian editor is currently focused — it returns the cached last-known state when focus is elsewhere (e.g. the user switched to a terminal to type a message) and falls back to the live state when Obsidian is focused. " +
+        "Always call this first when the user asks about their current file, selection, or context.",
       inputSchema: { type: "object", properties: {} },
       call(): ToolResult {
-        const d = getSelectionData(app);
+        const d = getLatestSelection() ?? getSelectionData(app);
         return d ? wrap(d) : wrap({ error: "no selection tracked yet" });
       },
     },
     {
       name: "getOpenEditors",
-      description: "Get all open editor tabs",
+      description:
+        "Returns all open markdown tabs in the Obsidian workspace. " +
+        "Each tab has a file URI, display label, languageId ('markdown'), and an isActive flag. " +
+        "isActive is true only when the Obsidian editor window is focused — it will be false for every tab when the user is in a terminal. " +
+        "Only call this when you need the full list of open tabs; to find the user's current file, use getLatestSelection instead.",
       inputSchema: { type: "object", properties: {} },
       call(): ToolResult {
         const base = basePath();
@@ -85,7 +84,7 @@ export function createEditorTools(app: App): ToolDefinition[] {
     },
     {
       name: "getWorkspaceFolders",
-      description: "Get vault path",
+      description: "Returns the absolute path to the Obsidian vault root. Use this to resolve relative file paths returned by other tools.",
       inputSchema: { type: "object", properties: {} },
       call(): ToolResult {
         return wrap({ folders: [basePath()] });
