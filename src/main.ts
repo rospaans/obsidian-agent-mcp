@@ -1,4 +1,4 @@
-import { Plugin, FileSystemAdapter } from "obsidian";
+import { Plugin, FileSystemAdapter, WorkspaceLeaf } from "obsidian";
 import { createServer, Server, IncomingMessage, ServerResponse } from "node:http";
 import { Socket } from "node:net";
 import { randomUUID } from "node:crypto";
@@ -11,6 +11,7 @@ import { DEFAULT_SETTINGS, AgentMCPSettingsTab, type PluginSettings } from "./se
 import { createEditorTools, getSelectionData } from "./tools/editor";
 import { createTasksTool } from "./tools/tasks";
 import type { ToolDefinition } from "./tools/types";
+import { AgentTerminalView, AGENT_TERMINAL_VIEW_TYPE, type TerminalConfig } from "./terminal/view";
 
 // ── WebSocket constants ──────────────────────────────────────────────────────
 
@@ -135,6 +136,19 @@ export default class ObsidianAgentMCP extends Plugin {
       },
     });
 
+    this.registerView(
+      AGENT_TERMINAL_VIEW_TYPE,
+      leaf => new AgentTerminalView(leaf, () => this.getTerminalConfig()),
+    );
+
+    this.addCommand({
+      id: "open-agent-terminal",
+      name: "Open Agent Terminal",
+      callback: () => this.openTerminalView(),
+    });
+
+    this.addRibbonIcon("terminal", "Open Agent Terminal", () => this.openTerminalView());
+
     this.startMcpHttpServer();
     console.log(`[claude-mcp] listening on 127.0.0.1:${this.port}`);
   }
@@ -147,6 +161,7 @@ export default class ObsidianAgentMCP extends Plugin {
     this.server?.close();
     this.mcpServer?.close();
     if (this.port) removeLockFile(this.port);
+    this.app.workspace.detachLeavesOfType(AGENT_TERMINAL_VIEW_TYPE);
   }
 
   async loadSettings() {
@@ -159,6 +174,39 @@ export default class ObsidianAgentMCP extends Plugin {
 
   private basePath(): string {
     return (this.app.vault.adapter as FileSystemAdapter).getBasePath();
+  }
+
+  // ── Terminal ───────────────────────────────────────────────────────────────
+
+  private pluginDir(): string {
+    return join(this.basePath(), ".obsidian", "plugins", this.manifest.id);
+  }
+
+  private getTerminalConfig(): TerminalConfig {
+    const t = this.settings.terminal;
+    const shellArgs = t.shellArgs.trim().length
+      ? t.shellArgs.split(/\s+/).filter(Boolean)
+      : undefined;
+    return {
+      pluginDir: this.pluginDir(),
+      cwd: t.cwd === "home" ? homedir() : this.basePath(),
+      shell: t.shell.trim() || undefined,
+      shellArgs,
+      startupCommand: t.startupCommand,
+      fontSize: t.fontSize,
+    };
+  }
+
+  private async openTerminalView(): Promise<void> {
+    const existing = this.app.workspace.getLeavesOfType(AGENT_TERMINAL_VIEW_TYPE);
+    if (existing.length > 0) {
+      this.app.workspace.revealLeaf(existing[0]);
+      return;
+    }
+    const leaf: WorkspaceLeaf | null = this.app.workspace.getRightLeaf(false);
+    if (!leaf) return;
+    await leaf.setViewState({ type: AGENT_TERMINAL_VIEW_TYPE, active: true });
+    this.app.workspace.revealLeaf(leaf);
   }
 
   // ── Tool registry ──────────────────────────────────────────────────────────

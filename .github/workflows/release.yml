@@ -1,0 +1,78 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            label: macos-arm64
+            platform: darwin
+            arch: arm64
+          - os: macos-13
+            label: macos-x64
+            platform: darwin
+            arch: x64
+          - os: ubuntu-latest
+            label: linux-x64
+            platform: linux
+            arch: x64
+          - os: windows-latest
+            label: windows-x64
+            platform: win32
+            arch: x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install dependencies
+        run: npm ci
+      - name: Build
+        run: npm run build
+        shell: bash
+      - name: Package artifact
+        shell: bash
+        run: |
+          mkdir -p artifact/obsidian-agent-mcp
+          cp main.js manifest.json artifact/obsidian-agent-mcp/
+          cp -r node-pty artifact/obsidian-agent-mcp/
+          if [ -f styles.css ]; then cp styles.css artifact/obsidian-agent-mcp/; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: obsidian-agent-mcp-${{ matrix.label }}
+          path: artifact/obsidian-agent-mcp
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Zip per-platform bundles
+        run: |
+          cd artifacts
+          for dir in */; do
+            name="${dir%/}"
+            (cd "$dir" && zip -r "../${name}.zip" .)
+          done
+          ls -la
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.zip
+          generate_release_notes: true

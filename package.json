@@ -1,15 +1,21 @@
 {
   "name": "obsidian_agent_mcp",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Connect Obsidian to coding agents over MCP with a built-in terminal.",
+  "main": "main.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "node esbuild.config.mjs"
+    "build": "node esbuild.config.mjs",
+    "dev": "node esbuild.config.mjs"
   },
   "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "author": "Robert Spaans",
+  "license": "MIT",
+  "dependencies": {
+    "@homebridge/node-pty-prebuilt-multiarch": "^0.13.1",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/addon-web-links": "^0.11.0",
+    "@xterm/xterm": "^5.5.0"
+  },
   "devDependencies": {
     "@types/node": "^25.5.0",
     "esbuild": "^0.27.4",
