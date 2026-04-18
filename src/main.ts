@@ -150,7 +150,7 @@ export default class ObsidianAgentMCP extends Plugin {
     this.addRibbonIcon("terminal", "Open Agent Terminal", () => this.openTerminalView());
 
     this.startMcpHttpServer();
-    console.log(`[claude-mcp] listening on 127.0.0.1:${this.port}`);
+    console.log(`[agent-mcp] WebSocket IDE server on 127.0.0.1:${this.port}`);
   }
 
   onunload() {
@@ -214,7 +214,7 @@ export default class ObsidianAgentMCP extends Plugin {
   private getActiveTools(): ToolDefinition[] {
     const tools: ToolDefinition[] = [...createEditorTools(this.app, () => this.latestSelection)];
     if (this.settings.enabledTools.tasks) {
-      tools.push(createTasksTool(() => this.basePath()));
+      tools.push(createTasksTool(this.app));
     }
     return tools;
   }
@@ -256,7 +256,7 @@ export default class ObsidianAgentMCP extends Plugin {
 
   // ── RPC routing ────────────────────────────────────────────────────────────
 
-  private handleRpc(msg: { jsonrpc: string; id: unknown; method: string; params?: Record<string, unknown> }): object {
+  private async handleRpc(msg: { jsonrpc: string; id: unknown; method: string; params?: Record<string, unknown> }): Promise<object> {
     const id = msg.id;
     const tools = this.getActiveTools();
 
@@ -281,9 +281,15 @@ export default class ObsidianAgentMCP extends Plugin {
 
       case "tools/call": {
         const name = msg.params?.name as string;
+        const toolParams = msg.params?.arguments as Record<string, unknown> | undefined;
         const tool = tools.find(t => t.name === name);
         if (!tool) return { jsonrpc: "2.0", id, error: { code: -32601, message: `Tool not found: ${name}` } };
-        return { jsonrpc: "2.0", id, result: tool.call(msg.params) };
+        try {
+          const result = await Promise.resolve(tool.call(toolParams));
+          return { jsonrpc: "2.0", id, result };
+        } catch (e) {
+          return { jsonrpc: "2.0", id, error: { code: -32603, message: `Tool execution failed: ${String(e)}` } };
+        }
       }
 
       default:
@@ -314,6 +320,23 @@ export default class ObsidianAgentMCP extends Plugin {
     socket.on("error", () => this.clients.delete(client));
   }
 
+  private async handleWsText(client: Client, payload: Buffer): Promise<void> {
+    let msg: { id: unknown; method: string; params?: Record<string, unknown>; jsonrpc: string };
+    try {
+      msg = JSON.parse(payload.toString());
+    } catch {
+      if (client.socket.writable) {
+        client.socket.write(makeFrame(OPCODE.TEXT, JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } })));
+      }
+      return;
+    }
+    if (msg.id == null) return;
+    const response = await this.handleRpc(msg);
+    if (client.socket.writable) {
+      client.socket.write(makeFrame(OPCODE.TEXT, JSON.stringify(response)));
+    }
+  }
+
   private processFrames(client: Client) {
     while (true) {
       const frame = parseFrame(client.buffer);
@@ -324,13 +347,8 @@ export default class ObsidianAgentMCP extends Plugin {
       else if (frame.opcode === OPCODE.PONG) { client.alive = true; }
       else if (frame.opcode === OPCODE.CLOSE) { client.socket.write(makeFrame(OPCODE.CLOSE, Buffer.alloc(0))); client.socket.destroy(); this.clients.delete(client); break; }
       else if (frame.opcode === OPCODE.TEXT) {
-        try {
-          const msg = JSON.parse(frame.payload.toString());
-          if (msg.id == null) continue;
-          client.socket.write(makeFrame(OPCODE.TEXT, JSON.stringify(this.handleRpc(msg))));
-        } catch {
-          client.socket.write(makeFrame(OPCODE.TEXT, JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } })));
-        }
+        const payload = frame.payload;
+        this.handleWsText(client, payload);
       }
     }
   }
@@ -387,7 +405,7 @@ export default class ObsidianAgentMCP extends Plugin {
     return JSON.parse(body);
   }
 
-  private handleStreamableHttpPayload(payload: unknown): { status: number; body?: string } {
+  private async handleStreamableHttpPayload(payload: unknown): Promise<{ status: number; body?: string }> {
     const messages = Array.isArray(payload) ? payload : [payload];
     const responses: object[] = [];
 
@@ -396,7 +414,7 @@ export default class ObsidianAgentMCP extends Plugin {
       const rpc = msg as { jsonrpc?: unknown; id?: unknown; method?: unknown; params?: Record<string, unknown> };
       if (rpc.jsonrpc !== "2.0") return { status: 400 };
       if (typeof rpc.method !== "string" || rpc.id == null) continue;
-      responses.push(this.handleRpc({
+      responses.push(await this.handleRpc({
         jsonrpc: "2.0",
         id: rpc.id,
         method: rpc.method,
@@ -433,9 +451,9 @@ export default class ObsidianAgentMCP extends Plugin {
       if (url.pathname === "/mcp" && req.method === "POST") {
         let body = "";
         req.on("data", (chunk: Buffer) => body += chunk.toString());
-        req.on("end", () => {
+        req.on("end", async () => {
           try {
-            const result = this.handleStreamableHttpPayload(this.parseJsonRpcBody(body));
+            const result = await this.handleStreamableHttpPayload(this.parseJsonRpcBody(body));
             if (result.status === 200) {
               res.writeHead(200, {
                 "Content-Type": "application/json",
@@ -477,12 +495,13 @@ export default class ObsidianAgentMCP extends Plugin {
         const sseRes = this.mcpSessions.get(url.searchParams.get("sessionId") ?? "");
         let body = "";
         req.on("data", (chunk: Buffer) => body += chunk.toString());
-        req.on("end", () => {
+        req.on("end", async () => {
           try {
             const msg = JSON.parse(body);
             res.writeHead(202, { "MCP-Protocol-Version": protocolVersion }); res.end();
             if (msg.id != null && sseRes && !sseRes.writableEnded) {
-              sseRes.write(`event: message\ndata: ${JSON.stringify(this.handleRpc(msg))}\n\n`);
+              const response = await this.handleRpc(msg);
+              sseRes.write(`event: message\ndata: ${JSON.stringify(response)}\n\n`);
             }
           } catch { res.writeHead(400, { "MCP-Protocol-Version": protocolVersion }); res.end(); }
         });
@@ -492,10 +511,10 @@ export default class ObsidianAgentMCP extends Plugin {
       res.writeHead(404, { "MCP-Protocol-Version": protocolVersion }); res.end();
     });
     this.mcpServer.on("error", (err: NodeJS.ErrnoException) => {
-      if (err.code !== "EADDRINUSE") console.error("[claude-mcp] MCP HTTP error:", err);
+      if (err.code !== "EADDRINUSE") console.error("[agent-mcp] MCP HTTP error:", err);
     });
     this.mcpServer.listen(MCP_HTTP_PORT, "127.0.0.1", () =>
-      console.log(`[claude-mcp] MCP HTTP server on 127.0.0.1:${MCP_HTTP_PORT}`)
+      console.log(`[agent-mcp] MCP HTTP server on 127.0.0.1:${MCP_HTTP_PORT}`)
     );
   }
 }

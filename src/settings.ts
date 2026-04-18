@@ -43,10 +43,11 @@ export class AgentMCPSettingsTab extends PluginSettingTab {
     containerEl.createEl("h3", { text: "Tools" });
 
     new Setting(containerEl)
-      .setName("Task Board integration")
+      .setName("Vault task scanner")
       .setDesc(
-        "Expose a getTasks tool that reads pending tasks from the Task Board plugin cache. " +
-        "Disable this if you are not using the Task Board plugin.",
+        "Expose a getTasks tool that scans the entire vault for markdown tasks and returns " +
+        "them grouped by due date. Parses Obsidian Tasks emoji syntax and dataview inline " +
+        "fields. No other plugins required.",
       )
       .addToggle(toggle =>
         toggle

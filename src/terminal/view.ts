@@ -2,11 +2,15 @@ import { ItemView, WorkspaceLeaf } from "obsidian";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { CanvasAddon } from "@xterm/addon-canvas";
 
 import { defaultShell, spawnShell, type IPty } from "./pty";
 import { ensureTerminalStyles } from "./styles";
 
 export const AGENT_TERMINAL_VIEW_TYPE = "agent-terminal";
+
+const RESIZE_DEBOUNCE_MS = 60;
 
 export interface TerminalConfig {
   pluginDir: string;
@@ -23,6 +27,7 @@ export class AgentTerminalView extends ItemView {
   private fit: FitAddon | null = null;
   private pty: IPty | null = null;
   private resizeObserver: ResizeObserver | null = null;
+  private resizeTimer: ReturnType<typeof setTimeout> | null = null;
   private disposers: Array<{ dispose(): void }> = [];
 
   constructor(
@@ -68,16 +73,35 @@ export class AgentTerminalView extends ItemView {
       allowProposedApi: true,
       theme: readTheme(),
       scrollback: 10_000,
+      // Wide CJK glyphs & modern emoji span two cells. Matches iTerm2, Alacritty, etc.
+      // The actual width table is swapped to Unicode 11 below via the addon.
     });
+
     const fit = new FitAddon();
     const links = new WebLinksAddon();
+    const unicode11 = new Unicode11Addon();
+
     term.loadAddon(fit);
     term.loadAddon(links);
+    term.loadAddon(unicode11);
+    term.unicode.activeVersion = "11";
+
     term.open(host);
-    fit.fit();
+
+    // Canvas renderer renders block characters (▀▄█▐▌) and box-drawing chars
+    // crisply with no anti-aliasing seams — which the Claude Code splash logo
+    // relies on. It must be loaded AFTER .open().
+    try {
+      term.loadAddon(new CanvasAddon());
+    } catch {
+      // Fall back to the default DOM renderer if canvas isn't available.
+    }
 
     this.term = term;
     this.fit = fit;
+
+    // Wait for layout to settle so fit() has real dimensions to measure.
+    this.scheduleInitialFit(host);
 
     try {
       this.pty = this.startPty(cfg, term.cols, term.rows);
@@ -96,18 +120,46 @@ export class AgentTerminalView extends ItemView {
       this.pty.write(cfg.startupCommand + "\r");
     }
 
-    this.resizeObserver = new ResizeObserver(() => {
-      if (!this.fit || !this.term || !this.pty) return;
-      try {
-        this.fit.fit();
-        this.pty.resize(this.term.cols, this.term.rows);
-      } catch {
-        // ignore transient resize errors
-      }
-    });
+    this.resizeObserver = new ResizeObserver(() => this.scheduleResize());
     this.resizeObserver.observe(host);
 
     term.focus();
+  }
+
+  private scheduleInitialFit(host: HTMLElement): void {
+    // Two rAFs: first lets the browser flush layout after element insertion,
+    // second lets xterm commit its initial render before we measure.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (host.clientWidth === 0 || host.clientHeight === 0) return;
+      this.applyResize();
+    }));
+  }
+
+  private scheduleResize(): void {
+    if (this.resizeTimer) clearTimeout(this.resizeTimer);
+    this.resizeTimer = setTimeout(() => {
+      this.resizeTimer = null;
+      this.applyResize();
+    }, RESIZE_DEBOUNCE_MS);
+  }
+
+  private applyResize(): void {
+    if (!this.fit || !this.term || !this.pty) return;
+    const dims = this.fit.proposeDimensions();
+    if (!dims || !isFinite(dims.cols) || !isFinite(dims.rows) || dims.cols < 2 || dims.rows < 2) {
+      // Pane is collapsed, hidden, or mid-animation — skip this tick.
+      return;
+    }
+    try {
+      this.fit.fit();
+      if (this.term.cols !== dims.cols || this.term.rows !== dims.rows) {
+        this.pty.resize(dims.cols, dims.rows);
+      } else {
+        this.pty.resize(this.term.cols, this.term.rows);
+      }
+    } catch {
+      // Transient races between xterm and the PTY on rapid resize — ignore.
+    }
   }
 
   private startPty(cfg: TerminalConfig, cols: number, rows: number): IPty {
@@ -119,8 +171,8 @@ export class AgentTerminalView extends ItemView {
       shell: file,
       args,
       cwd: cfg.cwd,
-      cols,
-      rows,
+      cols: Math.max(cols, 2),
+      rows: Math.max(rows, 2),
     });
   }
 
@@ -136,6 +188,10 @@ export class AgentTerminalView extends ItemView {
   }
 
   async onClose(): Promise<void> {
+    if (this.resizeTimer) {
+      clearTimeout(this.resizeTimer);
+      this.resizeTimer = null;
+    }
     for (const d of this.disposers) {
       try { d.dispose(); } catch { /* noop */ }
     }

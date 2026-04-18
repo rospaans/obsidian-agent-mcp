@@ -6,7 +6,7 @@ export interface ToolDefinition {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  call(params?: Record<string, unknown>): ToolResult;
+  call(params?: Record<string, unknown>): ToolResult | Promise<ToolResult>;
 }
 
 export function wrap(data: object): ToolResult {

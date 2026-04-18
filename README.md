@@ -31,23 +31,29 @@
 | `getLatestSelection` | Active file path, cursor position, and selected text (falls back to last-known state when Obsidian loses focus) | Always on |
 | `getOpenEditors` | All open markdown tabs with file URI, label, and which is active | Always on |
 | `getWorkspaceFolders` | Vault root path | Always on |
-| `getTasks` | All pending tasks from the vault, grouped by overdue / today / this week / future / undated | Task Board toggle |
+| `getTasks` | Scans every markdown file in the vault for tasks (Obsidian Tasks emoji syntax + dataview inline fields) and returns them grouped by overdue / today / this week / future / undated. Supports filters: `includeCompleted`, `pathPrefix`, `tag`, `limit`. | Vault task scanner toggle |
 
 ---
 
-## Optional integrations
+## Task discovery
 
-The plugin is self-contained, but `getTasks` leans on two excellent community plugins if you want task awareness:
+`getTasks` scans the vault natively — it walks every markdown file via Obsidian's metadata cache, parses task lines against both [Obsidian Tasks](https://github.com/obsidian-tasks-group/obsidian-tasks) emoji syntax and [Dataview](https://github.com/blacksmithgu/obsidian-dataview) inline fields, and returns a bucketed view by due date. No extra plugins required, but any task you write that matches the standard formats will be found.
 
-### [Obsidian Tasks](https://obsidian.md/plugins?id=obsidian-tasks-plugin) · [GitHub](https://github.com/obsidian-tasks-group/obsidian-tasks)
+Examples the scanner understands:
 
-The de-facto standard for task management in Obsidian. Tracks tasks across your vault with due dates, recurrence, priorities, and rich query blocks.
+```markdown
+- [ ] Write the release notes 📅 2026-04-25 ⏫ #release
+- [/] Refactor the parser 🛫 2026-04-18 #project/obsidian
+- [ ] Email the team [due:: 2026-04-20] #admin
+- [x] Book flights ✅ 2026-04-10
+```
 
-### [Task Board](https://obsidian.md/plugins?id=task-board) · [GitHub](https://github.com/tu2-atmanand/Task-Board)
+Tool arguments:
 
-Scans all tasks across your vault and displays them on a Kanban-style board. It maintains a JSON cache of all pending tasks at `.obsidian/plugins/task-board/tasks.json` — which is what this plugin's `getTasks` tool reads to give the agent a structured snapshot of your workload.
-
-Only needed if you use the `getTasks` tool.
+- `includeCompleted` (bool, default `false`) — include `[x]` and `[-]` lines.
+- `pathPrefix` (string, optional) — scope to a folder (e.g. `Projects/`).
+- `tag` (string, optional) — only tasks carrying this tag.
+- `limit` (number, default `2000`) — safety cap for very large vaults.
 
 ---
 
@@ -73,6 +79,19 @@ npm run build
 
 ---
 
+## How it's wired up
+
+The plugin runs two local services, both bound to `127.0.0.1`:
+
+| Service | Port | What it does | Used by |
+|---|---|---|---|
+| **WebSocket IDE server** | OS-assigned (random) | Streams active file + selection, advertises the lock file in `~/.claude/ide/`. Lets Claude Code auto-discover Obsidian as an "IDE". | Claude Code |
+| **MCP HTTP server** | `127.0.0.1:27183` | Exposes all tools (`getTasks`, `getLatestSelection`, `getOpenEditors`, `getWorkspaceFolders`) over the standard MCP Streamable HTTP transport. | Claude Code, Codex, any MCP client |
+
+Both routes into the same tool registry — adding one tool makes it available everywhere.
+
+**Important**: Claude Code treats IDE connections and MCP servers as separate systems. The IDE connection gives Claude live selection awareness; the MCP server is what exposes our tools to the model. You want **both** registered.
+
 ## Usage
 
 ### Opening a terminal
@@ -84,31 +103,44 @@ npm run build
 
 ### With Claude Code
 
-1. Open a terminal inside Obsidian (see above).
-2. Run `claude` — or set the startup command to `claude` so it runs automatically every time the terminal opens.
-3. Claude Code detects the lock file in `~/.claude/ide/` and prompts you to connect to Obsidian. Accept once and it auto-connects thereafter.
-4. Claude now sees your active file and selection in real time and can query your task list.
+Register both channels once, then you're done forever.
 
-Use the command palette command **"Send to Claude"** to explicitly push your current selection as a context mention.
+```bash
+# (1) Register our MCP server so Claude can call our tools
+claude mcp add --transport http obsidian-agent-mcp http://127.0.0.1:27183/mcp
+```
+
+The IDE connection is automatic — nothing to register. Claude Code scans `~/.claude/ide/` on startup and discovers the lock file the plugin wrote on launch.
+
+Then:
+
+1. Open a terminal inside Obsidian (ribbon icon or command palette) — or use any external terminal with your vault as cwd.
+2. Run `claude`.
+3. Claude prompts you to connect to the discovered Obsidian IDE — accept once.
+4. Inside Claude, `/mcp` should list `obsidian-agent-mcp` as connected.
+5. Ask something like *"What's due this week?"* — Claude will call `getTasks`. Or *"What file am I in?"* → `getLatestSelection`.
+
+Use the command palette command **"Send to Claude"** in Obsidian to explicitly push your current selection as a context mention.
+
+**Removing an older `obsidian-tasks` stdio server?** If you previously used the standalone `mcp-tasks.mjs` and have it registered, drop it — the plugin supersedes it:
+
+```bash
+claude mcp remove obsidian-tasks
+```
 
 ### With Codex CLI
 
-Codex does not use Claude's lock-file discovery flow, but it can connect to the same Obsidian tools over MCP.
+Codex only needs the MCP server registration:
 
-1. Enable the plugin in Obsidian.
-2. Register the MCP endpoint with Codex:
+```bash
+codex mcp add obsidian-agent-mcp --url http://127.0.0.1:27183/mcp
+```
 
-   ```bash
-   codex mcp add obsidian --url http://127.0.0.1:27183/mcp
-   ```
-
-3. Start `codex`.
-4. Use `/mcp` inside Codex to confirm the server is connected.
-5. Codex can now call the same Obsidian tools, including `getLatestSelection`, even after focus moves to the terminal.
+Start `codex`, run `/mcp` to confirm the connection, then ask anything that benefits from vault context.
 
 ### With a local model via Ollama
 
-You can get similar functionality with a local model using [Ollama](https://ollama.com) and a model that supports tool use. The MCP HTTP/SSE server on `127.0.0.1:27183` can be registered with any MCP-compatible client, including local ones.
+You can get similar functionality with a local model using [Ollama](https://ollama.com) and a model that supports tool use. The MCP HTTP server on `127.0.0.1:27183` can be registered with any MCP-compatible client, including local ones.
 
 ---
 
@@ -116,7 +148,7 @@ You can get similar functionality with a local model using [Ollama](https://olla
 
 **Settings → Agent MCP**
 
-- **Task Board integration** — expose the `getTasks` tool. Disable if you don't use Task Board.
+- **Vault task scanner** — expose the `getTasks` tool that scans the whole vault for markdown tasks. Disable if you don't want the agent to have task visibility.
 - **Terminal → Shell** — path to the shell binary. Defaults to `$SHELL`.
 - **Terminal → Shell arguments** — space-separated arguments (e.g. `-l`).
 - **Terminal → Startup command** — typed into the shell on open (e.g. `claude`).
@@ -155,25 +187,6 @@ if (this.settings.enabledTools.myTool) {
 ```
 
 Both the WebSocket and HTTP/SSE transports pick it up automatically. No changes to server or routing code.
-
----
-
-## Standalone MCP task server
-
-`mcp-tasks.mjs` is a lightweight stdio MCP server that exposes only the `getTasks` tool. It can be registered in `claude_desktop_config.json` independently of the plugin — useful if you want task awareness in Claude Desktop without running the full Obsidian plugin:
-
-```json
-{
-  "mcpServers": {
-    "obsidian-tasks": {
-      "command": "node",
-      "args": ["/path/to/mcp-tasks.mjs", "/path/to/your/vault"]
-    }
-  }
-}
-```
-
-A debug wrapper (`mcp-debug-wrapper.mjs`) logs all stdio traffic to `/tmp/mcp-debug.log` for troubleshooting.
 
 ---
 
