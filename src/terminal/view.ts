@@ -50,6 +50,10 @@ export class AgentTerminalView extends ItemView {
     return "terminal";
   }
 
+  focusTerminal(): void {
+    this.term?.focus();
+  }
+
   async onOpen(): Promise<void> {
     ensureTerminalStyles();
     const container = this.contentEl;

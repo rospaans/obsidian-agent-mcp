@@ -1,4 +1,4 @@
-import { Plugin, FileSystemAdapter, WorkspaceLeaf } from "obsidian";
+import { Plugin, FileSystemAdapter, WorkspaceLeaf, TFile } from "obsidian";
 import { createServer, Server, IncomingMessage, ServerResponse } from "node:http";
 import { Socket } from "node:net";
 import { randomUUID } from "node:crypto";
@@ -12,6 +12,7 @@ import { createEditorTools, getSelectionData } from "./tools/editor";
 import { createTasksTool } from "./tools/tasks";
 import type { ToolDefinition } from "./tools/types";
 import { AgentTerminalView, AGENT_TERMINAL_VIEW_TYPE, type TerminalConfig } from "./terminal/view";
+import { AgentDiffView, AGENT_DIFF_VIEW_TYPE } from "./diff/view";
 
 // ── WebSocket constants ──────────────────────────────────────────────────────
 
@@ -110,6 +111,8 @@ export default class ObsidianAgentMCP extends Plugin {
   private authToken = "";
   private latestSelection = getSelectionData(this.app);
   private lockRefreshInterval: ReturnType<typeof setInterval> | null = null;
+  private diffLeaves = new Map<string, WorkspaceLeaf>();
+  private pendingDiffResolvers = new Map<string, (r: object) => void>();
 
   settings: PluginSettings = DEFAULT_SETTINGS;
 
@@ -151,6 +154,8 @@ export default class ObsidianAgentMCP extends Plugin {
       leaf => new AgentTerminalView(leaf, () => this.getTerminalConfig()),
     );
 
+    this.registerView(AGENT_DIFF_VIEW_TYPE, leaf => new AgentDiffView(leaf));
+
     this.addCommand({
       id: "open-agent-terminal",
       name: "Open Agent Terminal",
@@ -173,6 +178,7 @@ export default class ObsidianAgentMCP extends Plugin {
     this.mcpServer?.close();
     if (this.port) removeLockFile(this.port);
     this.app.workspace.detachLeavesOfType(AGENT_TERMINAL_VIEW_TYPE);
+    this.app.workspace.detachLeavesOfType(AGENT_DIFF_VIEW_TYPE);
   }
 
   async loadSettings() {
@@ -265,6 +271,117 @@ export default class ObsidianAgentMCP extends Plugin {
     return data;
   }
 
+  // ── IDE-control tools (openDiff & friends) ───────────────────────────────────
+
+  private textResult(text: string): object {
+    return { content: [{ type: "text", text }] };
+  }
+
+  // Returns a result for IDE-control calls Claude Code issues over the WS
+  // connection, or null if the call is not one we handle here.
+  private async handleIdeTool(name: string, args: Record<string, unknown> | undefined): Promise<object | null> {
+    switch (name) {
+      case "openDiff":
+        return this.openDiff(args ?? {});
+      case "close_tab": {
+        const tab = String(args?.tab_name ?? "");
+        // If a diff for this tab is still blocking, the user has decided in the
+        // terminal — unblock it. (EXPERIMENT: treat any close as accepted.)
+        const resolver = this.pendingDiffResolvers.get(tab);
+        if (resolver) {
+          this.pendingDiffResolvers.delete(tab);
+          resolver({ content: [{ type: "text", text: "FILE_SAVED" }] });
+        }
+        this.detachDiff(tab);
+        this.focusTerminal();
+        return this.textResult("TAB_CLOSED");
+      }
+      case "closeAllDiffTabs":
+        this.detachAllDiffs();
+        return this.textResult("CLOSED_ALL_DIFF_TABS");
+      case "getDiagnostics":
+        return this.textResult("[]");
+      case "checkDocumentDirty":
+      case "saveDocument":
+      case "openFile":
+      case "executeCode":
+        return this.textResult("{}");
+      default:
+        return null;
+    }
+  }
+
+  private toRelativePath(absPath: string): string {
+    const base = this.basePath();
+    return absPath.startsWith(base + "/") ? absPath.slice(base.length + 1) : absPath;
+  }
+
+  private async openDiff(args: Record<string, unknown>): Promise<object> {
+    const filePath = String(args.new_file_path ?? args.old_file_path ?? "");
+    const newContent = String(args.new_file_contents ?? "");
+    const tabName = String(args.tab_name ?? filePath);
+    const rel = this.toRelativePath(filePath);
+    const fileName = rel.split("/").pop() || rel;
+
+    const existing = this.app.vault.getAbstractFileByPath(rel);
+    const oldContent = existing instanceof TFile ? await this.app.vault.read(existing) : "";
+
+    // Replace any stale diff tab with the same name before opening a fresh one.
+    this.detachDiff(tabName);
+
+    const leaf = this.app.workspace.getLeaf(true);
+    await leaf.setViewState({ type: AGENT_DIFF_VIEW_TYPE, active: true });
+    this.diffLeaves.set(tabName, leaf);
+    const view = leaf.view as AgentDiffView;
+    view.setDiff({ fileName, oldContent, newContent });
+
+    // Present the diff as a read-only preview, then hand focus back to the
+    // terminal so the user can approve there. Claude gates the edit via its own
+    // terminal prompt and writes the file itself; close_tab signals the decision.
+    // Re-focus after a tick so we win against Obsidian focusing the new leaf.
+    this.focusTerminal();
+    window.setTimeout(() => this.focusTerminal(), 60);
+
+    return new Promise<object>(resolve => {
+      this.pendingDiffResolvers.set(tabName, resolve);
+      window.setTimeout(() => {
+        if (this.pendingDiffResolvers.delete(tabName)) {
+          resolve({ content: [{ type: "text", text: "DIFF_REJECTED" }, { type: "text", text: tabName }] });
+        }
+      }, 600_000);
+    });
+  }
+
+  private detachDiff(tabName: string): void {
+    const resolver = this.pendingDiffResolvers.get(tabName);
+    if (resolver) {
+      this.pendingDiffResolvers.delete(tabName);
+      resolver({ content: [{ type: "text", text: "DIFF_REJECTED" }, { type: "text", text: tabName }] });
+    }
+    const leaf = this.diffLeaves.get(tabName);
+    if (!leaf) return;
+    this.diffLeaves.delete(tabName);
+    leaf.detach();
+  }
+
+  private focusTerminal(): void {
+    const leaves = this.app.workspace.getLeavesOfType(AGENT_TERMINAL_VIEW_TYPE);
+    if (leaves.length === 0) return;
+    const leaf = leaves[0];
+    this.app.workspace.revealLeaf(leaf);
+    const view = leaf.view;
+    if (view instanceof AgentTerminalView) view.focusTerminal();
+  }
+
+  private detachAllDiffs(): void {
+    for (const [tab, resolve] of this.pendingDiffResolvers) {
+      resolve({ content: [{ type: "text", text: "DIFF_REJECTED" }, { type: "text", text: tab }] });
+    }
+    this.pendingDiffResolvers.clear();
+    this.diffLeaves.clear();
+    this.app.workspace.detachLeavesOfType(AGENT_DIFF_VIEW_TYPE);
+  }
+
   // ── RPC routing ────────────────────────────────────────────────────────────
 
   private async handleRpc(msg: { jsonrpc: string; id: unknown; method: string; params?: Record<string, unknown> }): Promise<object> {
@@ -293,6 +410,12 @@ export default class ObsidianAgentMCP extends Plugin {
       case "tools/call": {
         const name = msg.params?.name as string;
         const toolParams = msg.params?.arguments as Record<string, unknown> | undefined;
+
+        // IDE-control calls (openDiff, close_tab, …) are issued by Claude Code
+        // over the WebSocket connection and are not part of our MCP tool registry.
+        const ideResult = await this.handleIdeTool(name, toolParams);
+        if (ideResult) return { jsonrpc: "2.0", id, result: ideResult };
+
         const tool = tools.find(t => t.name === name);
         if (!tool) return { jsonrpc: "2.0", id, error: { code: -32601, message: `Tool not found: ${name}` } };
         try {

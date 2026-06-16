@@ -10061,7 +10061,7 @@ __export(main_exports, {
   default: () => ObsidianAgentMCP
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian4 = require("obsidian");
+var import_obsidian5 = require("obsidian");
 var import_node_http = require("node:http");
 var import_node_crypto = require("node:crypto");
 var import_node_crypto2 = require("node:crypto");
@@ -10694,6 +10694,9 @@ var AgentTerminalView = class extends import_obsidian3.ItemView {
   getIcon() {
     return "terminal";
   }
+  focusTerminal() {
+    this.term?.focus();
+  }
   async onOpen() {
     ensureTerminalStyles();
     const container = this.contentEl;
@@ -10838,6 +10841,128 @@ function readTheme() {
   };
 }
 
+// src/diff/view.ts
+var import_obsidian4 = require("obsidian");
+var AGENT_DIFF_VIEW_TYPE = "agent-diff";
+function diffLines(oldStr, newStr) {
+  const a = oldStr.length ? oldStr.split("\n") : [];
+  const b = newStr.length ? newStr.split("\n") : [];
+  const n = a.length;
+  const m = b.length;
+  const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i2 = n - 1; i2 >= 0; i2--) {
+    for (let j2 = m - 1; j2 >= 0; j2--) {
+      dp[i2][j2] = a[i2] === b[j2] ? dp[i2 + 1][j2 + 1] + 1 : Math.max(dp[i2 + 1][j2], dp[i2][j2 + 1]);
+    }
+  }
+  const rows = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) {
+      rows.push({ type: "ctx", text: a[i] });
+      i++;
+      j++;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      rows.push({ type: "del", text: a[i] });
+      i++;
+    } else {
+      rows.push({ type: "add", text: b[j] });
+      j++;
+    }
+  }
+  while (i < n) {
+    rows.push({ type: "del", text: a[i] });
+    i++;
+  }
+  while (j < m) {
+    rows.push({ type: "add", text: b[j] });
+    j++;
+  }
+  return rows;
+}
+var AgentDiffView = class extends import_obsidian4.ItemView {
+  payload = null;
+  constructor(leaf) {
+    super(leaf);
+  }
+  getViewType() {
+    return AGENT_DIFF_VIEW_TYPE;
+  }
+  getDisplayText() {
+    return this.payload ? `Diff: ${this.payload.fileName}` : "Diff";
+  }
+  getIcon() {
+    return "git-compare";
+  }
+  setDiff(payload) {
+    this.payload = payload;
+    this.render();
+  }
+  render() {
+    if (!this.payload) return;
+    const root = this.contentEl;
+    root.empty();
+    root.addClass("agent-mcp-diff");
+    root.style.display = "flex";
+    root.style.flexDirection = "column";
+    root.style.height = "100%";
+    root.style.padding = "0";
+    const rows = diffLines(this.payload.oldContent, this.payload.newContent);
+    const added = rows.filter((r) => r.type === "add").length;
+    const removed = rows.filter((r) => r.type === "del").length;
+    const header = root.createDiv();
+    header.style.display = "flex";
+    header.style.alignItems = "center";
+    header.style.gap = "8px";
+    header.style.padding = "8px 12px";
+    header.style.borderBottom = "1px solid var(--background-modifier-border)";
+    header.style.flex = "0 0 auto";
+    const title = header.createSpan({ text: this.payload.fileName });
+    title.style.fontWeight = "600";
+    title.style.overflow = "hidden";
+    title.style.textOverflow = "ellipsis";
+    title.style.whiteSpace = "nowrap";
+    const stat = header.createSpan({ text: `+${added} -${removed}` });
+    stat.style.fontSize = "12px";
+    stat.style.color = "var(--text-muted)";
+    stat.style.marginRight = "auto";
+    const hint = header.createSpan({ text: "Approve in the terminal \u203A" });
+    hint.style.fontSize = "12px";
+    hint.style.color = "var(--text-accent)";
+    const body = root.createDiv();
+    body.style.flex = "1 1 auto";
+    body.style.overflow = "auto";
+    body.style.fontFamily = "var(--font-monospace, monospace)";
+    body.style.fontSize = "var(--font-text-size, 13px)";
+    body.style.lineHeight = "1.5";
+    body.style.padding = "4px 0";
+    for (const r of rows) {
+      const line = body.createDiv();
+      line.style.whiteSpace = "pre-wrap";
+      line.style.wordBreak = "break-word";
+      line.style.padding = "0 12px 0 8px";
+      line.style.borderLeft = "3px solid transparent";
+      const prefix = r.type === "add" ? "+ " : r.type === "del" ? "- " : "  ";
+      if (r.type === "add") {
+        line.style.background = "rgba(46, 160, 67, 0.15)";
+        line.style.borderLeftColor = "rgba(46, 160, 67, 0.8)";
+      } else if (r.type === "del") {
+        line.style.background = "rgba(248, 81, 73, 0.15)";
+        line.style.borderLeftColor = "rgba(248, 81, 73, 0.8)";
+      } else {
+        line.style.color = "var(--text-muted)";
+      }
+      line.setText(prefix + r.text);
+    }
+    if (rows.length === 0) {
+      const empty = body.createDiv({ text: "(no changes)" });
+      empty.style.padding = "8px 12px";
+      empty.style.color = "var(--text-muted)";
+    }
+  }
+};
+
 // src/main.ts
 var GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 var OPCODE = { TEXT: 1, CLOSE: 8, PING: 9, PONG: 10 };
@@ -10930,7 +11055,7 @@ function makeFrame(opcode, data) {
   }
   return Buffer.concat([header, payload]);
 }
-var ObsidianAgentMCP = class extends import_obsidian4.Plugin {
+var ObsidianAgentMCP = class extends import_obsidian5.Plugin {
   clients = /* @__PURE__ */ new Set();
   server = null;
   mcpServer = null;
@@ -10943,6 +11068,8 @@ var ObsidianAgentMCP = class extends import_obsidian4.Plugin {
   authToken = "";
   latestSelection = getSelectionData(this.app);
   lockRefreshInterval = null;
+  diffLeaves = /* @__PURE__ */ new Map();
+  pendingDiffResolvers = /* @__PURE__ */ new Map();
   settings = DEFAULT_SETTINGS;
   async onload() {
     await this.loadSettings();
@@ -10978,6 +11105,7 @@ var ObsidianAgentMCP = class extends import_obsidian4.Plugin {
       AGENT_TERMINAL_VIEW_TYPE,
       (leaf) => new AgentTerminalView(leaf, () => this.getTerminalConfig())
     );
+    this.registerView(AGENT_DIFF_VIEW_TYPE, (leaf) => new AgentDiffView(leaf));
     this.addCommand({
       id: "open-agent-terminal",
       name: "Open Agent Terminal",
@@ -10997,6 +11125,7 @@ var ObsidianAgentMCP = class extends import_obsidian4.Plugin {
     this.mcpServer?.close();
     if (this.port) removeLockFile(this.port);
     this.app.workspace.detachLeavesOfType(AGENT_TERMINAL_VIEW_TYPE);
+    this.app.workspace.detachLeavesOfType(AGENT_DIFF_VIEW_TYPE);
   }
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
@@ -11081,6 +11210,97 @@ data: ${JSON.stringify(msg)}
     if (data) this.latestSelection = data;
     return data;
   }
+  // ── IDE-control tools (openDiff & friends) ───────────────────────────────────
+  textResult(text) {
+    return { content: [{ type: "text", text }] };
+  }
+  // Returns a result for IDE-control calls Claude Code issues over the WS
+  // connection, or null if the call is not one we handle here.
+  async handleIdeTool(name, args) {
+    switch (name) {
+      case "openDiff":
+        return this.openDiff(args ?? {});
+      case "close_tab": {
+        const tab = String(args?.tab_name ?? "");
+        const resolver = this.pendingDiffResolvers.get(tab);
+        if (resolver) {
+          this.pendingDiffResolvers.delete(tab);
+          resolver({ content: [{ type: "text", text: "FILE_SAVED" }] });
+        }
+        this.detachDiff(tab);
+        this.focusTerminal();
+        return this.textResult("TAB_CLOSED");
+      }
+      case "closeAllDiffTabs":
+        this.detachAllDiffs();
+        return this.textResult("CLOSED_ALL_DIFF_TABS");
+      case "getDiagnostics":
+        return this.textResult("[]");
+      case "checkDocumentDirty":
+      case "saveDocument":
+      case "openFile":
+      case "executeCode":
+        return this.textResult("{}");
+      default:
+        return null;
+    }
+  }
+  toRelativePath(absPath) {
+    const base = this.basePath();
+    return absPath.startsWith(base + "/") ? absPath.slice(base.length + 1) : absPath;
+  }
+  async openDiff(args) {
+    const filePath = String(args.new_file_path ?? args.old_file_path ?? "");
+    const newContent = String(args.new_file_contents ?? "");
+    const tabName = String(args.tab_name ?? filePath);
+    const rel = this.toRelativePath(filePath);
+    const fileName = rel.split("/").pop() || rel;
+    const existing = this.app.vault.getAbstractFileByPath(rel);
+    const oldContent = existing instanceof import_obsidian5.TFile ? await this.app.vault.read(existing) : "";
+    this.detachDiff(tabName);
+    const leaf = this.app.workspace.getLeaf(true);
+    await leaf.setViewState({ type: AGENT_DIFF_VIEW_TYPE, active: true });
+    this.diffLeaves.set(tabName, leaf);
+    const view = leaf.view;
+    view.setDiff({ fileName, oldContent, newContent });
+    this.focusTerminal();
+    window.setTimeout(() => this.focusTerminal(), 60);
+    return new Promise((resolve) => {
+      this.pendingDiffResolvers.set(tabName, resolve);
+      window.setTimeout(() => {
+        if (this.pendingDiffResolvers.delete(tabName)) {
+          resolve({ content: [{ type: "text", text: "DIFF_REJECTED" }, { type: "text", text: tabName }] });
+        }
+      }, 6e5);
+    });
+  }
+  detachDiff(tabName) {
+    const resolver = this.pendingDiffResolvers.get(tabName);
+    if (resolver) {
+      this.pendingDiffResolvers.delete(tabName);
+      resolver({ content: [{ type: "text", text: "DIFF_REJECTED" }, { type: "text", text: tabName }] });
+    }
+    const leaf = this.diffLeaves.get(tabName);
+    if (!leaf) return;
+    this.diffLeaves.delete(tabName);
+    leaf.detach();
+  }
+  focusTerminal() {
+    const leaves = this.app.workspace.getLeavesOfType(AGENT_TERMINAL_VIEW_TYPE);
+    if (leaves.length === 0) return;
+    const leaf = leaves[0];
+    this.app.workspace.revealLeaf(leaf);
+    const view = leaf.view;
+    if (view instanceof AgentTerminalView) view.focusTerminal();
+  }
+  detachAllDiffs() {
+    for (const [tab, resolve] of this.pendingDiffResolvers) {
+      resolve({ content: [{ type: "text", text: "DIFF_REJECTED" }, { type: "text", text: tab }] });
+    }
+    this.pendingDiffResolvers.clear();
+    this.diffLeaves.clear();
+    this.app.workspace.detachLeavesOfType(AGENT_DIFF_VIEW_TYPE);
+  }
   // ── RPC routing ────────────────────────────────────────────────────────────
   async handleRpc(msg) {
     const id = msg.id;
@@ -11107,6 +11327,8 @@ data: ${JSON.stringify(msg)}
       case "tools/call": {
         const name = msg.params?.name;
         const toolParams = msg.params?.arguments;
+        const ideResult = await this.handleIdeTool(name, toolParams);
+        if (ideResult) return { jsonrpc: "2.0", id, result: ideResult };
         const tool = tools.find((t) => t.name === name);
         if (!tool) return { jsonrpc: "2.0", id, error: { code: -32601, message: `Tool not found: ${name}` } };
         try {

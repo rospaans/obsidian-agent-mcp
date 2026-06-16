@@ -15,9 +15,16 @@
 
 ### IDE integration (WebSocket)
 - Starts a local WebSocket server on `127.0.0.1` (random port, never network-exposed)
-- Writes a lock file to `~/.claude/ide/` — Claude Code reads this to auto-discover and connect to Obsidian, the same way it connects to VS Code or other editors
+- Writes a lock file to `~/.claude/ide/` — Claude Code reads this to auto-discover and connect to Obsidian, the same way it connects to VS Code or other editors. The lock is re-asserted on an interval, so if it ever gets cleaned out from under us the connection self-heals instead of going silently dead until the next reload.
 - Streams your active file path and text selection to Claude Code as you navigate
 - Adds a **"Send to Claude"** command to explicitly push your current selection as context
+
+### Edit previews (terminal-gated diffs)
+When Claude Code is connected as an IDE, it routes file edits through the IDE instead of printing the diff in the terminal. The plugin handles this by:
+- Opening a **read-only diff preview** of the proposed change in a side pane — added lines in green, removed lines struck in red.
+- Immediately **handing focus back to the terminal**, so you approve or decline right there using Claude's normal `y`/`n` prompt — no mouse, no separate buttons.
+- Letting **Claude write the file itself** on accept (the plugin never writes it), which keeps Claude's view of the file in sync and avoids "file content has changed" errors.
+- Clearing the preview and refocusing the terminal once you've decided.
 
 ### MCP HTTP server
 - Runs a second local MCP server on `127.0.0.1:27183`
@@ -85,7 +92,7 @@ The plugin runs two local services, both bound to `127.0.0.1`:
 
 | Service | Port | What it does | Used by |
 |---|---|---|---|
-| **WebSocket IDE server** | OS-assigned (random) | Streams active file + selection, advertises the lock file in `~/.claude/ide/`. Lets Claude Code auto-discover Obsidian as an "IDE". | Claude Code |
+| **WebSocket IDE server** | OS-assigned (random) | Streams active file + selection, advertises the lock file in `~/.claude/ide/`, and renders edit diffs as terminal-gated previews. Lets Claude Code auto-discover Obsidian as an "IDE". | Claude Code |
 | **MCP HTTP server** | `127.0.0.1:27183` | Exposes all tools (`getTasks`, `getLatestSelection`, `getOpenEditors`, `getWorkspaceFolders`) over the standard MCP Streamable HTTP transport. | Claude Code, Codex, any MCP client |
 
 Both routes into the same tool registry — adding one tool makes it available everywhere.
@@ -121,6 +128,8 @@ Then:
 5. Ask something like *"What's due this week?"* — Claude will call `getTasks`. Or *"What file am I in?"* → `getLatestSelection`.
 
 Use the command palette command **"Send to Claude"** in Obsidian to explicitly push your current selection as a context mention.
+
+When Claude edits a note, a read-only diff preview opens in Obsidian and focus returns to the terminal — approve or decline with Claude's `y`/`n` prompt as usual.
 
 **Removing an older `obsidian-tasks` stdio server?** If you previously used the standalone `mcp-tasks.mjs` and have it registered, drop it — the plugin supersedes it:
 
