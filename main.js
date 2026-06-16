@@ -10942,6 +10942,7 @@ var ObsidianAgentMCP = class extends import_obsidian4.Plugin {
   prevStateKey = null;
   authToken = "";
   latestSelection = getSelectionData(this.app);
+  lockRefreshInterval = null;
   settings = DEFAULT_SETTINGS;
   async onload() {
     await this.loadSettings();
@@ -10951,6 +10952,13 @@ var ObsidianAgentMCP = class extends import_obsidian4.Plugin {
     this.port = await this.startServer();
     const vaultPath = this.basePath();
     createLockFile(this.port, process.pid, vaultPath, this.authToken);
+    this.lockRefreshInterval = setInterval(() => {
+      if ((0, import_node_fs.existsSync)((0, import_node_path2.join)(LOCK_DIR, `${this.port}.lock`))) return;
+      try {
+        createLockFile(this.port, process.pid, vaultPath, this.authToken);
+      } catch {
+      }
+    }, 1e4);
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.scheduleBroadcast()));
     this.registerDomEvent(window, "focus", () => {
       this.prevStateKey = null;
@@ -10982,6 +10990,7 @@ var ObsidianAgentMCP = class extends import_obsidian4.Plugin {
   onunload() {
     if (this.broadcastTimer) clearTimeout(this.broadcastTimer);
     if (this.pingInterval) clearInterval(this.pingInterval);
+    if (this.lockRefreshInterval) clearInterval(this.lockRefreshInterval);
     for (const c of this.clients) c.socket.destroy();
     this.clients.clear();
     this.server?.close();

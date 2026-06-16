@@ -3,7 +3,7 @@ import { createServer, Server, IncomingMessage, ServerResponse } from "node:http
 import { Socket } from "node:net";
 import { randomUUID } from "node:crypto";
 import { createHash } from "node:crypto";
-import { writeFileSync, renameSync, unlinkSync, readdirSync, readFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, renameSync, unlinkSync, readdirSync, readFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
@@ -109,6 +109,7 @@ export default class ObsidianAgentMCP extends Plugin {
   private prevStateKey: string | null = null;
   private authToken = "";
   private latestSelection = getSelectionData(this.app);
+  private lockRefreshInterval: ReturnType<typeof setInterval> | null = null;
 
   settings: PluginSettings = DEFAULT_SETTINGS;
 
@@ -121,6 +122,15 @@ export default class ObsidianAgentMCP extends Plugin {
     this.port = await this.startServer();
     const vaultPath = this.basePath();
     createLockFile(this.port, process.pid, vaultPath, this.authToken);
+
+    // The lock file is how Claude Code discovers Obsidian as an "IDE". Other
+    // Claude Code instances housekeep ~/.claude/ide/ and can remove our lock,
+    // which silently kills selection streaming until the next plugin reload.
+    // Re-assert it on a slow interval so a deleted lock self-heals.
+    this.lockRefreshInterval = setInterval(() => {
+      if (existsSync(join(LOCK_DIR, `${this.port}.lock`))) return;
+      try { createLockFile(this.port, process.pid, vaultPath, this.authToken); } catch { }
+    }, 10_000);
 
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.scheduleBroadcast()));
     this.registerDomEvent(window, "focus", () => { this.prevStateKey = null; this.scheduleBroadcast(); });
@@ -156,6 +166,7 @@ export default class ObsidianAgentMCP extends Plugin {
   onunload() {
     if (this.broadcastTimer) clearTimeout(this.broadcastTimer);
     if (this.pingInterval) clearInterval(this.pingInterval);
+    if (this.lockRefreshInterval) clearInterval(this.lockRefreshInterval);
     for (const c of this.clients) c.socket.destroy();
     this.clients.clear();
     this.server?.close();
