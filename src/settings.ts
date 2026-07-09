@@ -1,9 +1,11 @@
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type ObsidianAgentMCP from "./main";
+import { checkPython } from "./terminal/pty";
 
 export interface TerminalSettings {
   backend: "claude" | "ollama";
   ollamaModel: string;
+  pythonPath: string;
   shell: string;
   shellArgs: string;
   startupCommand: string;
@@ -12,19 +14,14 @@ export interface TerminalSettings {
 }
 
 export interface PluginSettings {
-  enabledTools: {
-    tasks: boolean;
-  };
   terminal: TerminalSettings;
 }
 
 export const DEFAULT_SETTINGS: PluginSettings = {
-  enabledTools: {
-    tasks: true,
-  },
   terminal: {
     backend: "claude",
     ollamaModel: "",
+    pythonPath: "",
     shell: "",
     shellArgs: "",
     startupCommand: "",
@@ -43,24 +40,6 @@ export class AgentMCPSettingsTab extends PluginSettingTab {
     containerEl.empty();
 
     containerEl.createEl("h2", { text: "Agent MCP" });
-
-    containerEl.createEl("h3", { text: "Tools" });
-
-    new Setting(containerEl)
-      .setName("Vault task scanner")
-      .setDesc(
-        "Expose a getTasks tool that scans the entire vault for markdown tasks and returns " +
-        "them grouped by due date. Parses Obsidian Tasks emoji syntax and dataview inline " +
-        "fields. No other plugins required.",
-      )
-      .addToggle(toggle =>
-        toggle
-          .setValue(this.plugin.settings.enabledTools.tasks)
-          .onChange(async value => {
-            this.plugin.settings.enabledTools.tasks = value;
-            await this.plugin.saveSettings();
-          }),
-      );
 
     containerEl.createEl("h3", { text: "Agent backend" });
 
@@ -103,6 +82,33 @@ export class AgentMCPSettingsTab extends PluginSettingTab {
     }
 
     containerEl.createEl("h3", { text: "Terminal" });
+
+    new Setting(containerEl)
+      .setName("Python path")
+      .setDesc(
+        "Path to a Python 3 interpreter. The terminal uses it to run a small pseudo-terminal " +
+        "bridge (standard library only, no packages to install). Leave blank to use \"python3\" " +
+        "from your PATH. Required on macOS and Linux; Windows is not yet supported.",
+      )
+      .addText(text =>
+        text
+          .setPlaceholder("python3")
+          .setValue(this.plugin.settings.terminal.pythonPath)
+          .onChange(async value => {
+            this.plugin.settings.terminal.pythonPath = value.trim();
+            await this.plugin.saveSettings();
+          }),
+      )
+      .addButton(button =>
+        button
+          .setButtonText("Check")
+          .onClick(async () => {
+            button.setButtonText("Checking…").setDisabled(true);
+            const result = await checkPython(this.plugin.settings.terminal.pythonPath);
+            new Notice(result.message, result.ok ? 5000 : 10000);
+            button.setButtonText("Check").setDisabled(false);
+          }),
+      );
 
     new Setting(containerEl)
       .setName("Shell")

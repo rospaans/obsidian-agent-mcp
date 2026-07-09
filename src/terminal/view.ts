@@ -14,6 +14,7 @@ const RESIZE_DEBOUNCE_MS = 60;
 
 export interface TerminalConfig {
   pluginDir: string;
+  pythonPath?: string;
   cwd: string;
   shell?: string;
   shellArgs?: string[];
@@ -172,6 +173,7 @@ export class AgentTerminalView extends ItemView {
       : defaultShell();
     return spawnShell({
       pluginDir: cfg.pluginDir,
+      pythonPath: cfg.pythonPath,
       shell: file,
       args,
       cwd: cfg.cwd,

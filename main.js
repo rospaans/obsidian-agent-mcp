@@ -10065,19 +10065,237 @@ var import_obsidian5 = require("obsidian");
 var import_node_http = require("node:http");
 var import_node_crypto = require("node:crypto");
 var import_node_crypto2 = require("node:crypto");
-var import_node_fs = require("node:fs");
+var import_node_fs2 = require("node:fs");
 var import_node_path2 = require("node:path");
 var import_node_os = require("node:os");
 
 // src/settings.ts
 var import_obsidian = require("obsidian");
+
+// src/terminal/pty.ts
+var import_node_child_process = require("node:child_process");
+var import_node_fs = require("node:fs");
+var import_node_path = require("node:path");
+var import_node_string_decoder = require("node:string_decoder");
+
+// src/terminal/bridge.py
+var bridge_default = `#!/usr/bin/env python3
+"""PTY bridge for the Obsidian Agent MCP terminal.
+
+Spawns a shell on a real kernel pty and bridges it over stdio, giving the
+plugin true-TTY behavior (raw mode, ANSI, resize) without shipping any native
+.node binary. Uses only the Python standard library.
+
+Protocol
+  argv:   shell cwd cols rows [shell args...]
+  stdin:  raw terminal input bytes  -> pty master
+  stdout: raw terminal output bytes <- pty master
+  fd 3:   control channel, lines of "cols,rows\\\\n" -> TIOCSWINSZ + SIGWINCH
+  exit:   process exits with the shell's exit code
+"""
+import os, sys, pty, fcntl, termios, struct, select, signal, errno
+
+
+def set_winsize(fd, rows, cols):
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+
+
+def main():
+    if len(sys.argv) < 5:
+        sys.stderr.write("pty bridge: expected shell cwd cols rows [args...]\\n")
+        sys.exit(2)
+
+    shell = sys.argv[1]
+    cwd = sys.argv[2]
+    cols = int(sys.argv[3])
+    rows = int(sys.argv[4])
+    shell_args = sys.argv[5:]
+
+    pid, master_fd = pty.fork()
+    if pid == 0:  # child: attached to the pty slave as its controlling TTY
+        try:
+            os.chdir(cwd)
+        except OSError:
+            pass
+        os.execvp(shell, [shell] + shell_args)
+        os._exit(127)
+
+    # parent
+    set_winsize(master_fd, rows, cols)
+
+    ctrl_fd = 3
+    try:
+        os.fstat(ctrl_fd)
+    except OSError:
+        ctrl_fd = None
+
+    stdin_fd = sys.stdin.fileno()
+    stdout_fd = sys.stdout.fileno()
+    ctrl_buf = b""
+
+    while True:
+        rfds = [master_fd, stdin_fd] + ([ctrl_fd] if ctrl_fd is not None else [])
+        try:
+            r, _, _ = select.select(rfds, [], [])
+        except OSError as e:
+            if e.errno == errno.EINTR:
+                continue
+            raise
+
+        if master_fd in r:
+            try:
+                data = os.read(master_fd, 65536)
+            except OSError:
+                data = b""
+            if not data:
+                break
+            os.write(stdout_fd, data)
+
+        if stdin_fd in r:
+            try:
+                data = os.read(stdin_fd, 65536)
+            except OSError:
+                data = b""
+            if data:
+                os.write(master_fd, data)
+
+        if ctrl_fd is not None and ctrl_fd in r:
+            try:
+                chunk = os.read(ctrl_fd, 4096)
+            except OSError:
+                chunk = b""
+            if chunk:
+                ctrl_buf += chunk
+                while b"\\n" in ctrl_buf:
+                    line, ctrl_buf = ctrl_buf.split(b"\\n", 1)
+                    parts = line.decode(errors="ignore").strip().split(",")
+                    if len(parts) == 2:
+                        try:
+                            set_winsize(master_fd, int(parts[1]), int(parts[0]))
+                            os.kill(pid, signal.SIGWINCH)
+                        except (ValueError, OSError):
+                            pass
+
+    try:
+        _, status = os.waitpid(pid, 0)
+        code = os.waitstatus_to_exitcode(status)
+    except OSError:
+        code = 0
+    sys.exit(code if code >= 0 else 1)
+
+
+if __name__ == "__main__":
+    main()
+`;
+
+// src/terminal/pty.ts
+var BRIDGE_FILENAME = ".pty-bridge.py";
+var PythonPty = class {
+  constructor(child) {
+    this.child = child;
+    this.control = child.stdio[3] ?? null;
+    child.stdout?.on("data", (b) => this.emit(this.decoder.write(b)));
+    child.stderr?.on("data", (b) => this.emit(b.toString()));
+    child.on("error", (err) => {
+      this.emit(`\r
+\x1B[31m[agent-mcp] could not start the Python PTY bridge:\x1B[0m ${err.message}\r
+`);
+      this.emit("Set a valid Python 3 path in Settings \u2192 Agent MCP \u2192 Terminal.\r\n");
+      this.fireExit(1);
+    });
+    child.on("exit", (code, signal) => this.fireExit(code ?? 0, signal ?? void 0));
+  }
+  dataCbs = /* @__PURE__ */ new Set();
+  exitCbs = /* @__PURE__ */ new Set();
+  decoder = new import_node_string_decoder.StringDecoder("utf8");
+  control;
+  exited = false;
+  emit(s) {
+    if (s) for (const cb of this.dataCbs) cb(s);
+  }
+  fireExit(exitCode, signal) {
+    if (this.exited) return;
+    this.exited = true;
+    for (const cb of this.exitCbs) cb({ exitCode, signal });
+  }
+  onData(cb) {
+    this.dataCbs.add(cb);
+    return { dispose: () => {
+      this.dataCbs.delete(cb);
+    } };
+  }
+  onExit(cb) {
+    this.exitCbs.add(cb);
+    return { dispose: () => {
+      this.exitCbs.delete(cb);
+    } };
+  }
+  resize(cols, rows) {
+    try {
+      this.control?.write(`${cols},${rows}
+`);
+    } catch {
+    }
+  }
+  write(data) {
+    try {
+      this.child.stdin?.write(data);
+    } catch {
+    }
+  }
+  kill(signal) {
+    try {
+      this.child.kill(signal);
+    } catch {
+    }
+  }
+};
+function spawnShell(opts) {
+  const bridgePath = (0, import_node_path.join)(opts.pluginDir, BRIDGE_FILENAME);
+  (0, import_node_fs.writeFileSync)(bridgePath, bridge_default);
+  const cols = opts.cols ?? 80;
+  const rows = opts.rows ?? 24;
+  const env = {
+    ...process.env,
+    ...opts.env,
+    TERM: opts.env?.TERM ?? "xterm-256color",
+    COLORTERM: opts.env?.COLORTERM ?? "truecolor"
+  };
+  const python = opts.pythonPath?.trim() || "python3";
+  const child = (0, import_node_child_process.spawn)(
+    python,
+    [bridgePath, opts.shell, opts.cwd, String(cols), String(rows), ...opts.args ?? []],
+    { cwd: opts.cwd, env, stdio: ["pipe", "pipe", "pipe", "pipe"] }
+  );
+  return new PythonPty(child);
+}
+function defaultShell() {
+  if (process.platform === "win32") {
+    return { file: process.env.COMSPEC || "cmd.exe", args: [] };
+  }
+  const shell = process.env.SHELL || "/bin/bash";
+  return { file: shell, args: ["-l"] };
+}
+function checkPython(pythonPath) {
+  const python = pythonPath?.trim() || "python3";
+  const probe = "import sys, pty, termios, fcntl, struct, select; print(sys.version.split()[0])";
+  return new Promise((resolve) => {
+    (0, import_node_child_process.execFile)(python, ["-c", probe], { timeout: 5e3 }, (err, stdout) => {
+      if (err) {
+        resolve({ ok: false, message: `Could not run "${python}": ${err.message}` });
+        return;
+      }
+      resolve({ ok: true, message: `Python ${stdout.trim()} \u2014 PTY support available.` });
+    });
+  });
+}
+
+// src/settings.ts
 var DEFAULT_SETTINGS = {
-  enabledTools: {
-    tasks: true
-  },
   terminal: {
     backend: "claude",
     ollamaModel: "",
+    pythonPath: "",
     shell: "",
     shellArgs: "",
     startupCommand: "",
@@ -10094,15 +10312,6 @@ var AgentMCPSettingsTab = class extends import_obsidian.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl("h2", { text: "Agent MCP" });
-    containerEl.createEl("h3", { text: "Tools" });
-    new import_obsidian.Setting(containerEl).setName("Vault task scanner").setDesc(
-      "Expose a getTasks tool that scans the entire vault for markdown tasks and returns them grouped by due date. Parses Obsidian Tasks emoji syntax and dataview inline fields. No other plugins required."
-    ).addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.enabledTools.tasks).onChange(async (value) => {
-        this.plugin.settings.enabledTools.tasks = value;
-        await this.plugin.saveSettings();
-      })
-    );
     containerEl.createEl("h3", { text: "Agent backend" });
     new import_obsidian.Setting(containerEl).setName("Backend").setDesc(
       'Which agent the terminal launches. "Claude Code" uses your normal claude setup. "Ollama" runs `ollama launch claude`, which points Claude Code at a local Ollama model \u2014 the IDE connection, MCP tools, and diff previews all work identically.'
@@ -10124,6 +10333,21 @@ var AgentMCPSettingsTab = class extends import_obsidian.PluginSettingTab {
       );
     }
     containerEl.createEl("h3", { text: "Terminal" });
+    new import_obsidian.Setting(containerEl).setName("Python path").setDesc(
+      'Path to a Python 3 interpreter. The terminal uses it to run a small pseudo-terminal bridge (standard library only, no packages to install). Leave blank to use "python3" from your PATH. Required on macOS and Linux; Windows is not yet supported.'
+    ).addText(
+      (text) => text.setPlaceholder("python3").setValue(this.plugin.settings.terminal.pythonPath).onChange(async (value) => {
+        this.plugin.settings.terminal.pythonPath = value.trim();
+        await this.plugin.saveSettings();
+      })
+    ).addButton(
+      (button) => button.setButtonText("Check").onClick(async () => {
+        button.setButtonText("Checking\u2026").setDisabled(true);
+        const result = await checkPython(this.plugin.settings.terminal.pythonPath);
+        new import_obsidian.Notice(result.message, result.ok ? 5e3 : 1e4);
+        button.setButtonText("Check").setDisabled(false);
+      })
+    );
     new import_obsidian.Setting(containerEl).setName("Shell").setDesc(
       "Path to the shell executable. Leave blank to use $SHELL (macOS/Linux) or %COMSPEC% (Windows)."
     ).addText(
@@ -10238,187 +10462,6 @@ function createEditorTools(app, getLatestSelection) {
   ];
 }
 
-// src/tools/tasks.ts
-var TASK_LINE_RE = /^\s*[-*+]\s+\[([ xX/\-])\]\s+(.*)$/;
-var DUE_EMOJI_RE = /📅\s*(\d{4}-\d{2}-\d{2})/;
-var SCHEDULED_EMOJI_RE = /⏳\s*(\d{4}-\d{2}-\d{2})/;
-var START_EMOJI_RE = /🛫\s*(\d{4}-\d{2}-\d{2})/;
-var DONE_EMOJI_RE = /✅\s*(\d{4}-\d{2}-\d{2})/;
-var CANCELLED_EMOJI_RE = /❌\s*(\d{4}-\d{2}-\d{2})/;
-var CREATED_EMOJI_RE = /➕\s*(\d{4}-\d{2}-\d{2})/;
-var TASK_ID_RE = /🆔\s*\S+/;
-var DEPENDS_ON_RE = /⛔\s*\S+/;
-var RECURRENCE_EMOJI_RE = /🔁\s*([^📅⏳🛫✅❌➕🆔⛔🔺⏫🔼🔽⏬#]+?)(?=\s*[📅⏳🛫✅❌➕🆔⛔🔺⏫🔼🔽⏬#]|$)/;
-var DUE_DATAVIEW_RE = /\[due::\s*(\d{4}-\d{2}-\d{2})\s*\]/;
-var SCHEDULED_DATAVIEW_RE = /\[scheduled::\s*(\d{4}-\d{2}-\d{2})\s*\]/;
-var START_DATAVIEW_RE = /\[start::\s*(\d{4}-\d{2}-\d{2})\s*\]/;
-var TAG_RE = /(?:^|\s)(#[\p{L}\p{N}_\-\/]+)/gu;
-var PRIORITY = {
-  "\u{1F53A}": "highest",
-  "\u23EB": "high",
-  "\u{1F53C}": "medium",
-  "\u{1F53D}": "low",
-  "\u23EC": "lowest"
-};
-function statusFromChar(c) {
-  if (c === "x" || c === "X") return "done";
-  if (c === "/") return "inProgress";
-  if (c === "-") return "cancelled";
-  return "pending";
-}
-function extract(re, line) {
-  const m = line.match(re);
-  return m ? m[1] : null;
-}
-function cleanTitle(raw) {
-  return raw.replace(DUE_EMOJI_RE, "").replace(SCHEDULED_EMOJI_RE, "").replace(START_EMOJI_RE, "").replace(DONE_EMOJI_RE, "").replace(CANCELLED_EMOJI_RE, "").replace(CREATED_EMOJI_RE, "").replace(TASK_ID_RE, "").replace(DEPENDS_ON_RE, "").replace(RECURRENCE_EMOJI_RE, "").replace(/[🔺⏫🔼🔽⏬]/g, "").replace(DUE_DATAVIEW_RE, "").replace(SCHEDULED_DATAVIEW_RE, "").replace(START_DATAVIEW_RE, "").replace(/\s*#[\p{L}\p{N}_\-\/]+/gu, "").replace(/\s+/g, " ").trim();
-}
-function parseTaskLine(line, file, lineNumber) {
-  const m = line.match(TASK_LINE_RE);
-  if (!m) return null;
-  const status = statusFromChar(m[1]);
-  const body = m[2];
-  const due = extract(DUE_EMOJI_RE, body) ?? extract(DUE_DATAVIEW_RE, body);
-  const scheduled = extract(SCHEDULED_EMOJI_RE, body) ?? extract(SCHEDULED_DATAVIEW_RE, body);
-  const start = extract(START_EMOJI_RE, body) ?? extract(START_DATAVIEW_RE, body);
-  const done = extract(DONE_EMOJI_RE, body);
-  const cancelled = extract(CANCELLED_EMOJI_RE, body);
-  let priority = null;
-  for (const [emoji, level] of Object.entries(PRIORITY)) {
-    if (body.includes(emoji)) {
-      priority = level;
-      break;
-    }
-  }
-  const rec = body.match(RECURRENCE_EMOJI_RE);
-  const recurrence = rec ? rec[1].trim() : null;
-  const tags = [];
-  for (const m2 of body.matchAll(TAG_RE)) tags.push(m2[1]);
-  return {
-    status,
-    title: cleanTitle(body),
-    due,
-    scheduled,
-    start,
-    done,
-    cancelled,
-    priority,
-    recurrence,
-    tags,
-    file,
-    line: lineNumber
-  };
-}
-function localDateString(d) {
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
-async function scanVaultTasks(app, opts = {}) {
-  const files = app.vault.getMarkdownFiles();
-  const out = [];
-  const prefix = opts.pathPrefix?.replace(/^\/+|\/+$/g, "");
-  const tagFilter = opts.tag?.startsWith("#") ? opts.tag : opts.tag ? `#${opts.tag}` : null;
-  const limit = opts.limit ?? 2e3;
-  for (const file of files) {
-    if (prefix && !file.path.startsWith(prefix)) continue;
-    const cache = app.metadataCache.getFileCache(file);
-    const items = cache?.listItems?.filter((li) => li.task !== void 0);
-    if (!items || items.length === 0) continue;
-    const content = await app.vault.cachedRead(file);
-    const lines = content.split("\n");
-    for (const item of items) {
-      const lineNo = item.position.start.line;
-      const raw = lines[lineNo];
-      if (typeof raw !== "string") continue;
-      const parsed = parseTaskLine(raw, file.path, lineNo);
-      if (!parsed) continue;
-      if (!opts.includeCompleted && (parsed.status === "done" || parsed.status === "cancelled")) continue;
-      if (tagFilter && !parsed.tags.some((t) => t.toLowerCase() === tagFilter.toLowerCase())) continue;
-      out.push(parsed);
-      if (out.length >= limit) return out;
-    }
-  }
-  return out;
-}
-function bucket(tasks) {
-  const today = /* @__PURE__ */ new Date();
-  today.setHours(0, 0, 0, 0);
-  const todayStr = localDateString(today);
-  const weekEnd = new Date(today);
-  weekEnd.setDate(today.getDate() + 7);
-  const weekEndStr = localDateString(weekEnd);
-  const overdue = [];
-  const dueToday = [];
-  const dueThisWeek = [];
-  const future = [];
-  const undated = [];
-  for (const t of tasks) {
-    if (!t.due) undated.push(t);
-    else if (t.due < todayStr) overdue.push(t);
-    else if (t.due === todayStr) dueToday.push(t);
-    else if (t.due <= weekEndStr) dueThisWeek.push(t);
-    else future.push(t);
-  }
-  return { overdue, dueToday, dueThisWeek, future, undated };
-}
-function createTasksTool(app) {
-  return {
-    name: "getTasks",
-    description: "Scan the entire Obsidian vault for tasks and return them grouped by due date (overdue, today, this week, future, undated). Parses standard Obsidian Tasks syntax (e.g. `- [ ] Do thing \u{1F4C5} 2026-01-15 \u23EB #project`) as well as dataview inline fields (`[due:: 2026-01-15]`). Use this instead of reading individual markdown files when the user asks about their tasks, to-do list, workload, what's overdue, what's due today, or similar questions. No external plugins required \u2014 reads directly from the vault's markdown files via Obsidian's metadata cache.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        includeCompleted: {
-          type: "boolean",
-          description: "Include tasks marked done ([x]) or cancelled ([-]). Default: false."
-        },
-        pathPrefix: {
-          type: "string",
-          description: "Only include tasks from files whose path starts with this prefix (e.g. 'Projects/')."
-        },
-        tag: {
-          type: "string",
-          description: "Only include tasks carrying this tag (with or without leading '#')."
-        },
-        limit: {
-          type: "number",
-          description: "Maximum number of tasks to return. Default: 2000."
-        }
-      }
-    },
-    async call(params) {
-      try {
-        const opts = {
-          includeCompleted: params?.includeCompleted === true,
-          pathPrefix: typeof params?.pathPrefix === "string" ? params.pathPrefix : void 0,
-          tag: typeof params?.tag === "string" ? params.tag : void 0,
-          limit: typeof params?.limit === "number" ? params.limit : void 0
-        };
-        const tasks = await scanVaultTasks(app, opts);
-        const { overdue, dueToday, dueThisWeek, future, undated } = bucket(tasks);
-        return wrap({
-          asOf: (/* @__PURE__ */ new Date()).toISOString(),
-          summary: {
-            total: tasks.length,
-            overdue: overdue.length,
-            today: dueToday.length,
-            thisWeek: dueThisWeek.length,
-            future: future.length,
-            undated: undated.length
-          },
-          overdue,
-          today: dueToday,
-          thisWeek: dueThisWeek,
-          future,
-          undated
-        });
-      } catch (e) {
-        return wrap({ error: "Failed to scan vault tasks", detail: String(e) });
-      }
-    }
-  };
-}
-
 // src/terminal/view.ts
 var import_obsidian3 = require("obsidian");
 var import_xterm2 = __toESM(require_xterm());
@@ -10426,37 +10469,6 @@ var import_addon_fit = __toESM(require_addon_fit());
 var import_addon_web_links = __toESM(require_addon_web_links());
 var import_addon_unicode11 = __toESM(require_addon_unicode11());
 var import_addon_canvas = __toESM(require_addon_canvas());
-
-// src/terminal/pty.ts
-var import_node_path = require("node:path");
-function loadNodePty(pluginDir) {
-  const pkgDir = (0, import_node_path.join)(pluginDir, "node-pty");
-  return require(pkgDir);
-}
-function spawnShell(opts) {
-  const nodePty = loadNodePty(opts.pluginDir);
-  const env = {
-    ...process.env,
-    ...opts.env,
-    TERM: opts.env?.TERM ?? "xterm-256color",
-    COLORTERM: opts.env?.COLORTERM ?? "truecolor"
-  };
-  return nodePty.spawn(opts.shell, opts.args ?? [], {
-    name: "xterm-256color",
-    cols: opts.cols ?? 80,
-    rows: opts.rows ?? 24,
-    cwd: opts.cwd,
-    env,
-    encoding: "utf8"
-  });
-}
-function defaultShell() {
-  if (process.platform === "win32") {
-    return { file: process.env.COMSPEC || "cmd.exe", args: [] };
-  }
-  const shell = process.env.SHELL || "/bin/bash";
-  return { file: shell, args: ["-l"] };
-}
 
 // node_modules/@xterm/xterm/css/xterm.css
 var xterm_default = `/**
@@ -10808,6 +10820,7 @@ var AgentTerminalView = class extends import_obsidian3.ItemView {
     const { file, args } = cfg.shell ? { file: cfg.shell, args: cfg.shellArgs ?? [] } : defaultShell();
     return spawnShell({
       pluginDir: cfg.pluginDir,
+      pythonPath: cfg.pythonPath,
       shell: file,
       args,
       cwd: cfg.cwd,
@@ -10998,29 +11011,29 @@ var SUPPORTED_MCP_PROTOCOL_VERSIONS = /* @__PURE__ */ new Set([
 ]);
 var LOCK_DIR = (0, import_node_path2.join)((0, import_node_os.homedir)(), ".claude", "ide");
 function createLockFile(port, pid, vaultPath, authToken) {
-  (0, import_node_fs.mkdirSync)(LOCK_DIR, { recursive: true });
+  (0, import_node_fs2.mkdirSync)(LOCK_DIR, { recursive: true });
   const tmp = (0, import_node_path2.join)(LOCK_DIR, `${port}.lock.tmp`);
   const lockPath = (0, import_node_path2.join)(LOCK_DIR, `${port}.lock`);
-  (0, import_node_fs.writeFileSync)(tmp, JSON.stringify({ pid, port, workspaceFolders: [vaultPath], ideName: "Obsidian", transport: "ws", authToken }));
-  (0, import_node_fs.renameSync)(tmp, lockPath);
+  (0, import_node_fs2.writeFileSync)(tmp, JSON.stringify({ pid, port, workspaceFolders: [vaultPath], ideName: "Obsidian", transport: "ws", authToken }));
+  (0, import_node_fs2.renameSync)(tmp, lockPath);
 }
 function removeLockFile(port) {
   try {
-    (0, import_node_fs.unlinkSync)((0, import_node_path2.join)(LOCK_DIR, `${port}.lock`));
+    (0, import_node_fs2.unlinkSync)((0, import_node_path2.join)(LOCK_DIR, `${port}.lock`));
   } catch {
   }
 }
 function cleanStaleLockFiles() {
   try {
-    for (const file of (0, import_node_fs.readdirSync)(LOCK_DIR).filter((f) => f.endsWith(".lock"))) {
+    for (const file of (0, import_node_fs2.readdirSync)(LOCK_DIR).filter((f) => f.endsWith(".lock"))) {
       const p = (0, import_node_path2.join)(LOCK_DIR, file);
       try {
-        const data = JSON.parse((0, import_node_fs.readFileSync)(p, "utf-8"));
+        const data = JSON.parse((0, import_node_fs2.readFileSync)(p, "utf-8"));
         if (data.ideName !== "Obsidian") continue;
         process.kill(data.pid, 0);
       } catch {
         try {
-          (0, import_node_fs.unlinkSync)(p);
+          (0, import_node_fs2.unlinkSync)(p);
         } catch {
         }
       }
@@ -11092,6 +11105,10 @@ var ObsidianAgentMCP = class extends import_obsidian5.Plugin {
   lockRefreshInterval = null;
   diffLeaves = /* @__PURE__ */ new Map();
   pendingDiffResolvers = /* @__PURE__ */ new Map();
+  // The note leaf the edit belongs to, captured before the diff opens so we can
+  // restore it in the main area once the diff closes — otherwise Obsidian falls
+  // back to an arbitrary neighbouring tab.
+  diffReturnLeaves = /* @__PURE__ */ new Map();
   settings = DEFAULT_SETTINGS;
   async onload() {
     await this.loadSettings();
@@ -11102,7 +11119,7 @@ var ObsidianAgentMCP = class extends import_obsidian5.Plugin {
     const vaultPath = this.basePath();
     createLockFile(this.port, process.pid, vaultPath, this.authToken);
     this.lockRefreshInterval = setInterval(() => {
-      if ((0, import_node_fs.existsSync)((0, import_node_path2.join)(LOCK_DIR, `${this.port}.lock`))) return;
+      if ((0, import_node_fs2.existsSync)((0, import_node_path2.join)(LOCK_DIR, `${this.port}.lock`))) return;
       try {
         createLockFile(this.port, process.pid, vaultPath, this.authToken);
       } catch {
@@ -11167,6 +11184,7 @@ var ObsidianAgentMCP = class extends import_obsidian5.Plugin {
     const shellArgs = t.shellArgs.trim().length ? t.shellArgs.split(/\s+/).filter(Boolean) : void 0;
     return {
       pluginDir: this.pluginDir(),
+      pythonPath: t.pythonPath,
       cwd: t.cwd === "home" ? (0, import_node_os.homedir)() : this.basePath(),
       shell: t.shell.trim() || void 0,
       shellArgs,
@@ -11198,11 +11216,7 @@ var ObsidianAgentMCP = class extends import_obsidian5.Plugin {
   }
   // ── Tool registry ──────────────────────────────────────────────────────────
   getActiveTools() {
-    const tools = [...createEditorTools(this.app, () => this.latestSelection)];
-    if (this.settings.enabledTools.tasks) {
-      tools.push(createTasksTool(this.app));
-    }
-    return tools;
+    return [...createEditorTools(this.app, () => this.latestSelection)];
   }
   // ── Broadcasting ───────────────────────────────────────────────────────────
   scheduleBroadcast() {
@@ -11290,10 +11304,12 @@ data: ${JSON.stringify(msg)}
     const fileName = rel.split("/").pop() || rel;
     const existing = this.app.vault.getAbstractFileByPath(rel);
     const oldContent = existing instanceof import_obsidian5.TFile ? await this.app.vault.read(existing) : "";
+    const returnLeaf = this.findMarkdownLeaf(rel);
     this.detachDiff(tabName);
     const leaf = this.app.workspace.getLeaf(true);
     await leaf.setViewState({ type: AGENT_DIFF_VIEW_TYPE, active: true });
     this.diffLeaves.set(tabName, leaf);
+    if (returnLeaf) this.diffReturnLeaves.set(tabName, returnLeaf);
     const view = leaf.view;
     view.setDiff({ fileName, oldContent, newContent });
     this.focusTerminal();
@@ -11317,6 +11333,20 @@ data: ${JSON.stringify(msg)}
     if (!leaf) return;
     this.diffLeaves.delete(tabName);
     leaf.detach();
+    this.restoreNoteLeaf(tabName);
+  }
+  // Finds the open markdown tab showing the given vault-relative path, if any.
+  findMarkdownLeaf(path) {
+    return this.app.workspace.getLeavesOfType("markdown").find((l) => l.view.file?.path === path) ?? null;
+  }
+  // Brings the edited note back to the foreground in the main area without
+  // stealing keyboard focus (that goes to the terminal via focusTerminal).
+  restoreNoteLeaf(tabName) {
+    const leaf = this.diffReturnLeaves.get(tabName);
+    this.diffReturnLeaves.delete(tabName);
+    if (leaf && leaf.view?.file) {
+      this.app.workspace.setActiveLeaf(leaf, { focus: false });
+    }
   }
   focusTerminal() {
     const leaves = this.app.workspace.getLeavesOfType(AGENT_TERMINAL_VIEW_TYPE);
@@ -11332,6 +11362,7 @@ data: ${JSON.stringify(msg)}
     }
     this.pendingDiffResolvers.clear();
     this.diffLeaves.clear();
+    this.diffReturnLeaves.clear();
     this.app.workspace.detachLeavesOfType(AGENT_DIFF_VIEW_TYPE);
   }
   // ── RPC routing ────────────────────────────────────────────────────────────

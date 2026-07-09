@@ -38,29 +38,6 @@ When Claude Code is connected as an IDE, it routes file edits through the IDE in
 | `getLatestSelection` | Active file path, cursor position, and selected text (falls back to last-known state when Obsidian loses focus) | Always on |
 | `getOpenEditors` | All open markdown tabs with file URI, label, and which is active | Always on |
 | `getWorkspaceFolders` | Vault root path | Always on |
-| `getTasks` | Scans every markdown file in the vault for tasks (Obsidian Tasks emoji syntax + dataview inline fields) and returns them grouped by overdue / today / this week / future / undated. Supports filters: `includeCompleted`, `pathPrefix`, `tag`, `limit`. | Vault task scanner toggle |
-
----
-
-## Task discovery
-
-`getTasks` scans the vault natively — it walks every markdown file via Obsidian's metadata cache, parses task lines against both [Obsidian Tasks](https://github.com/obsidian-tasks-group/obsidian-tasks) emoji syntax and [Dataview](https://github.com/blacksmithgu/obsidian-dataview) inline fields, and returns a bucketed view by due date. No extra plugins required, but any task you write that matches the standard formats will be found.
-
-Examples the scanner understands:
-
-```markdown
-- [ ] Write the release notes 📅 2026-04-25 ⏫ #release
-- [/] Refactor the parser 🛫 2026-04-18 #project/obsidian
-- [ ] Email the team [due:: 2026-04-20] #admin
-- [x] Book flights ✅ 2026-04-10
-```
-
-Tool arguments:
-
-- `includeCompleted` (bool, default `false`) — include `[x]` and `[-]` lines.
-- `pathPrefix` (string, optional) — scope to a folder (e.g. `Projects/`).
-- `tag` (string, optional) — only tasks carrying this tag.
-- `limit` (number, default `2000`) — safety cap for very large vaults.
 
 ---
 
@@ -93,7 +70,7 @@ The plugin runs two local services, both bound to `127.0.0.1`:
 | Service | Port | What it does | Used by |
 |---|---|---|---|
 | **WebSocket IDE server** | OS-assigned (random) | Streams active file + selection, advertises the lock file in `~/.claude/ide/`, and renders edit diffs as terminal-gated previews. Lets Claude Code auto-discover Obsidian as an "IDE". | Claude Code |
-| **MCP HTTP server** | `127.0.0.1:27183` | Exposes all tools (`getTasks`, `getLatestSelection`, `getOpenEditors`, `getWorkspaceFolders`) over the standard MCP Streamable HTTP transport. | Claude Code, Codex, any MCP client |
+| **MCP HTTP server** | `127.0.0.1:27183` | Exposes all tools (`getLatestSelection`, `getOpenEditors`, `getWorkspaceFolders`) over the standard MCP Streamable HTTP transport. | Claude Code, Codex, any MCP client |
 
 Both routes into the same tool registry — adding one tool makes it available everywhere.
 
@@ -125,17 +102,11 @@ Then:
 2. Run `claude`.
 3. Claude prompts you to connect to the discovered Obsidian IDE — accept once.
 4. Inside Claude, `/mcp` should list `obsidian-agent-mcp` as connected.
-5. Ask something like *"What's due this week?"* — Claude will call `getTasks`. Or *"What file am I in?"* → `getLatestSelection`.
+5. Ask something like *"What file am I in?"* → Claude will call `getLatestSelection`.
 
 Use the command palette command **"Send to Claude"** in Obsidian to explicitly push your current selection as a context mention.
 
 When Claude edits a note, a read-only diff preview opens in Obsidian and focus returns to the terminal — approve or decline with Claude's `y`/`n` prompt as usual.
-
-**Removing an older `obsidian-tasks` stdio server?** If you previously used the standalone `mcp-tasks.mjs` and have it registered, drop it — the plugin supersedes it:
-
-```bash
-claude mcp remove obsidian-tasks
-```
 
 ### With Codex CLI
 
@@ -179,7 +150,6 @@ The IDE connection is still automatic — Claude Code discovers Obsidian via the
 
 **Settings → Agent MCP**
 
-- **Vault task scanner** — expose the `getTasks` tool that scans the whole vault for markdown tasks. Disable if you don't want the agent to have task visibility.
 - **Terminal → Shell** — path to the shell binary. Defaults to `$SHELL`.
 - **Terminal → Shell arguments** — space-separated arguments (e.g. `-l`).
 - **Terminal → Startup command** — typed into the shell on open (e.g. `claude`).

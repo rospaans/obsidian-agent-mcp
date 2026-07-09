@@ -1,4 +1,4 @@
-import { Plugin, FileSystemAdapter, WorkspaceLeaf, TFile } from "obsidian";
+import { Plugin, FileSystemAdapter, WorkspaceLeaf, MarkdownView, TFile } from "obsidian";
 import { createServer, Server, IncomingMessage, ServerResponse } from "node:http";
 import { Socket } from "node:net";
 import { randomUUID } from "node:crypto";
@@ -9,7 +9,6 @@ import { homedir } from "node:os";
 
 import { DEFAULT_SETTINGS, AgentMCPSettingsTab, type PluginSettings, type TerminalSettings } from "./settings";
 import { createEditorTools, getSelectionData } from "./tools/editor";
-import { createTasksTool } from "./tools/tasks";
 import type { ToolDefinition } from "./tools/types";
 import { AgentTerminalView, AGENT_TERMINAL_VIEW_TYPE, type TerminalConfig } from "./terminal/view";
 import { AgentDiffView, AGENT_DIFF_VIEW_TYPE } from "./diff/view";
@@ -113,6 +112,10 @@ export default class ObsidianAgentMCP extends Plugin {
   private lockRefreshInterval: ReturnType<typeof setInterval> | null = null;
   private diffLeaves = new Map<string, WorkspaceLeaf>();
   private pendingDiffResolvers = new Map<string, (r: object) => void>();
+  // The note leaf the edit belongs to, captured before the diff opens so we can
+  // restore it in the main area once the diff closes — otherwise Obsidian falls
+  // back to an arbitrary neighbouring tab.
+  private diffReturnLeaves = new Map<string, WorkspaceLeaf>();
 
   settings: PluginSettings = DEFAULT_SETTINGS;
 
@@ -206,6 +209,7 @@ export default class ObsidianAgentMCP extends Plugin {
       : undefined;
     return {
       pluginDir: this.pluginDir(),
+      pythonPath: t.pythonPath,
       cwd: t.cwd === "home" ? homedir() : this.basePath(),
       shell: t.shell.trim() || undefined,
       shellArgs,
@@ -241,11 +245,7 @@ export default class ObsidianAgentMCP extends Plugin {
   // ── Tool registry ──────────────────────────────────────────────────────────
 
   private getActiveTools(): ToolDefinition[] {
-    const tools: ToolDefinition[] = [...createEditorTools(this.app, () => this.latestSelection)];
-    if (this.settings.enabledTools.tasks) {
-      tools.push(createTasksTool(this.app));
-    }
-    return tools;
+    return [...createEditorTools(this.app, () => this.latestSelection)];
   }
 
   // ── Broadcasting ───────────────────────────────────────────────────────────
@@ -338,12 +338,17 @@ export default class ObsidianAgentMCP extends Plugin {
     const existing = this.app.vault.getAbstractFileByPath(rel);
     const oldContent = existing instanceof TFile ? await this.app.vault.read(existing) : "";
 
+    // Remember which note tab the edit belongs to before we open the diff, so we
+    // can bring it back to the foreground once the user accepts/declines.
+    const returnLeaf = this.findMarkdownLeaf(rel);
+
     // Replace any stale diff tab with the same name before opening a fresh one.
     this.detachDiff(tabName);
 
     const leaf = this.app.workspace.getLeaf(true);
     await leaf.setViewState({ type: AGENT_DIFF_VIEW_TYPE, active: true });
     this.diffLeaves.set(tabName, leaf);
+    if (returnLeaf) this.diffReturnLeaves.set(tabName, returnLeaf);
     const view = leaf.view as AgentDiffView;
     view.setDiff({ fileName, oldContent, newContent });
 
@@ -374,6 +379,24 @@ export default class ObsidianAgentMCP extends Plugin {
     if (!leaf) return;
     this.diffLeaves.delete(tabName);
     leaf.detach();
+    this.restoreNoteLeaf(tabName);
+  }
+
+  // Finds the open markdown tab showing the given vault-relative path, if any.
+  private findMarkdownLeaf(path: string): WorkspaceLeaf | null {
+    return this.app.workspace
+      .getLeavesOfType("markdown")
+      .find(l => (l.view as MarkdownView).file?.path === path) ?? null;
+  }
+
+  // Brings the edited note back to the foreground in the main area without
+  // stealing keyboard focus (that goes to the terminal via focusTerminal).
+  private restoreNoteLeaf(tabName: string): void {
+    const leaf = this.diffReturnLeaves.get(tabName);
+    this.diffReturnLeaves.delete(tabName);
+    if (leaf && (leaf.view as MarkdownView | null)?.file) {
+      this.app.workspace.setActiveLeaf(leaf, { focus: false });
+    }
   }
 
   private focusTerminal(): void {
@@ -391,6 +414,7 @@ export default class ObsidianAgentMCP extends Plugin {
     }
     this.pendingDiffResolvers.clear();
     this.diffLeaves.clear();
+    this.diffReturnLeaves.clear();
     this.app.workspace.detachLeavesOfType(AGENT_DIFF_VIEW_TYPE);
   }
 
