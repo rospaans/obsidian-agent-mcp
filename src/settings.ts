@@ -2,6 +2,8 @@ import { App, PluginSettingTab, Setting } from "obsidian";
 import type ObsidianAgentMCP from "./main";
 
 export interface TerminalSettings {
+  backend: "claude" | "ollama";
+  ollamaModel: string;
   shell: string;
   shellArgs: string;
   startupCommand: string;
@@ -21,6 +23,8 @@ export const DEFAULT_SETTINGS: PluginSettings = {
     tasks: true,
   },
   terminal: {
+    backend: "claude",
+    ollamaModel: "",
     shell: "",
     shellArgs: "",
     startupCommand: "",
@@ -58,6 +62,46 @@ export class AgentMCPSettingsTab extends PluginSettingTab {
           }),
       );
 
+    containerEl.createEl("h3", { text: "Agent backend" });
+
+    new Setting(containerEl)
+      .setName("Backend")
+      .setDesc(
+        "Which agent the terminal launches. \"Claude Code\" uses your normal claude setup. " +
+        "\"Ollama\" runs `ollama launch claude`, which points Claude Code at a local Ollama " +
+        "model — the IDE connection, MCP tools, and diff previews all work identically.",
+      )
+      .addDropdown(drop =>
+        drop
+          .addOption("claude", "Claude Code")
+          .addOption("ollama", "Ollama (local model)")
+          .setValue(this.plugin.settings.terminal.backend)
+          .onChange(async value => {
+            this.plugin.settings.terminal.backend = value as "claude" | "ollama";
+            await this.plugin.saveSettings();
+            this.display();
+          }),
+      );
+
+    if (this.plugin.settings.terminal.backend === "ollama") {
+      new Setting(containerEl)
+        .setName("Ollama model")
+        .setDesc(
+          "Passed as `ollama launch claude --model <model>` (e.g. qwen3.5, glm-4.7-flash, " +
+          "kimi-k2.5:cloud). Leave blank to use Ollama's default. Requires a recent Ollama " +
+          "with the `launch` command and a model with a large (64k+) context window.",
+        )
+        .addText(text =>
+          text
+            .setPlaceholder("qwen3.5")
+            .setValue(this.plugin.settings.terminal.ollamaModel)
+            .onChange(async value => {
+              this.plugin.settings.terminal.ollamaModel = value.trim();
+              await this.plugin.saveSettings();
+            }),
+        );
+    }
+
     containerEl.createEl("h3", { text: "Terminal" });
 
     new Setting(containerEl)
@@ -91,7 +135,8 @@ export class AgentMCPSettingsTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Startup command")
       .setDesc(
-        "Optional command automatically typed into the shell when a terminal is opened (e.g. `claude`).",
+        "Optional command automatically typed into the shell when a terminal is opened (e.g. `claude`). " +
+        "Used with the Claude Code backend; ignored when the Ollama backend is selected.",
       )
       .addText(text =>
         text

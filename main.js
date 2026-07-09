@@ -10076,6 +10076,8 @@ var DEFAULT_SETTINGS = {
     tasks: true
   },
   terminal: {
+    backend: "claude",
+    ollamaModel: "",
     shell: "",
     shellArgs: "",
     startupCommand: "",
@@ -10101,6 +10103,26 @@ var AgentMCPSettingsTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
+    containerEl.createEl("h3", { text: "Agent backend" });
+    new import_obsidian.Setting(containerEl).setName("Backend").setDesc(
+      'Which agent the terminal launches. "Claude Code" uses your normal claude setup. "Ollama" runs `ollama launch claude`, which points Claude Code at a local Ollama model \u2014 the IDE connection, MCP tools, and diff previews all work identically.'
+    ).addDropdown(
+      (drop) => drop.addOption("claude", "Claude Code").addOption("ollama", "Ollama (local model)").setValue(this.plugin.settings.terminal.backend).onChange(async (value) => {
+        this.plugin.settings.terminal.backend = value;
+        await this.plugin.saveSettings();
+        this.display();
+      })
+    );
+    if (this.plugin.settings.terminal.backend === "ollama") {
+      new import_obsidian.Setting(containerEl).setName("Ollama model").setDesc(
+        "Passed as `ollama launch claude --model <model>` (e.g. qwen3.5, glm-4.7-flash, kimi-k2.5:cloud). Leave blank to use Ollama's default. Requires a recent Ollama with the `launch` command and a model with a large (64k+) context window."
+      ).addText(
+        (text) => text.setPlaceholder("qwen3.5").setValue(this.plugin.settings.terminal.ollamaModel).onChange(async (value) => {
+          this.plugin.settings.terminal.ollamaModel = value.trim();
+          await this.plugin.saveSettings();
+        })
+      );
+    }
     containerEl.createEl("h3", { text: "Terminal" });
     new import_obsidian.Setting(containerEl).setName("Shell").setDesc(
       "Path to the shell executable. Leave blank to use $SHELL (macOS/Linux) or %COMSPEC% (Windows)."
@@ -10117,7 +10139,7 @@ var AgentMCPSettingsTab = class extends import_obsidian.PluginSettingTab {
       })
     );
     new import_obsidian.Setting(containerEl).setName("Startup command").setDesc(
-      "Optional command automatically typed into the shell when a terminal is opened (e.g. `claude`)."
+      "Optional command automatically typed into the shell when a terminal is opened (e.g. `claude`). Used with the Claude Code backend; ignored when the Ollama backend is selected."
     ).addText(
       (text) => text.setPlaceholder("claude").setValue(this.plugin.settings.terminal.startupCommand).onChange(async (value) => {
         this.plugin.settings.terminal.startupCommand = value;
@@ -10433,7 +10455,7 @@ function defaultShell() {
     return { file: process.env.COMSPEC || "cmd.exe", args: [] };
   }
   const shell = process.env.SHELL || "/bin/bash";
-  return { file: shell, args: [] };
+  return { file: shell, args: ["-l"] };
 }
 
 // node_modules/@xterm/xterm/css/xterm.css
@@ -11148,9 +11170,20 @@ var ObsidianAgentMCP = class extends import_obsidian5.Plugin {
       cwd: t.cwd === "home" ? (0, import_node_os.homedir)() : this.basePath(),
       shell: t.shell.trim() || void 0,
       shellArgs,
-      startupCommand: t.startupCommand,
+      startupCommand: this.resolveStartupCommand(t),
       fontSize: t.fontSize
     };
+  }
+  // Claude Code backend uses the user's free-text startup command. The Ollama
+  // backend launches Claude Code via `ollama launch claude`, which points it at
+  // a local Ollama model — everything downstream (IDE connection, MCP tools,
+  // diff previews) behaves identically because it is still Claude Code.
+  resolveStartupCommand(t) {
+    if (t.backend === "ollama") {
+      const model = t.ollamaModel.trim();
+      return model ? `ollama launch claude --model ${model}` : "ollama launch claude";
+    }
+    return t.startupCommand;
   }
   async openTerminalView() {
     const existing = this.app.workspace.getLeavesOfType(AGENT_TERMINAL_VIEW_TYPE);

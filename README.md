@@ -149,7 +149,29 @@ Start `codex`, run `/mcp` to confirm the connection, then ask anything that bene
 
 ### With a local model via Ollama
 
-You can get similar functionality with a local model using [Ollama](https://ollama.com) and a model that supports tool use. The MCP HTTP server on `127.0.0.1:27183` can be registered with any MCP-compatible client, including local ones.
+You can run the **exact same Claude Code experience** against a local model with [Ollama](https://ollama.com). Ollama exposes an Anthropic-compatible endpoint at `http://localhost:11434` and ships an `ollama launch claude` helper that starts Claude Code pointed at a local model. Because it's still Claude Code underneath, the IDE connection, MCP tools, and diff previews all work identically — no extra registration, no proxy.
+
+**Setup:**
+
+1. Install [Ollama](https://ollama.com) and pull a model with a large (64k+) context window and tool-use support — e.g. `ollama pull qwen3.5`. See [Ollama's Claude Code guide](https://docs.ollama.com/integrations/claude-code) for recommended models.
+2. In **Settings → Agent MCP → Agent backend**, set **Backend** to **Ollama** and enter your model name (e.g. `qwen3.5`).
+3. Open the Agent Terminal. It now launches `ollama launch claude --model <your-model>` instead of `claude`.
+4. As with Claude Code, register the MCP server once so the model can call our tools:
+
+   ```bash
+   claude mcp add --transport http obsidian-agent-mcp http://127.0.0.1:27183/mcp
+   ```
+
+The IDE connection is still automatic — Claude Code discovers Obsidian via the lock file exactly as before.
+
+> Prefer to drive it yourself? `ollama launch claude` just sets these and runs Claude Code:
+>
+> ```bash
+> export ANTHROPIC_BASE_URL=http://localhost:11434
+> export ANTHROPIC_AUTH_TOKEN=ollama
+> export ANTHROPIC_API_KEY=""
+> claude --model qwen3.5
+> ```
 
 ---
 

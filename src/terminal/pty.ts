@@ -67,5 +67,9 @@ export function defaultShell(): { file: string; args: string[] } {
     return { file: process.env.COMSPEC || "cmd.exe", args: [] };
   }
   const shell = process.env.SHELL || "/bin/bash";
-  return { file: shell, args: [] };
+  // Spawn as a login shell, matching Terminal.app / iTerm. A GUI-launched
+  // Obsidian inherits macOS's stripped PATH; a non-login shell never runs
+  // /etc/zprofile (path_helper), so /usr/local/bin and friends stay missing
+  // and tools like `ollama` aren't found. `-l` re-sources the full profile.
+  return { file: shell, args: ["-l"] };
 }

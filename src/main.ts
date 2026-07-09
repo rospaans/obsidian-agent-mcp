@@ -7,7 +7,7 @@ import { writeFileSync, renameSync, unlinkSync, readdirSync, readFileSync, mkdir
 import { join } from "node:path";
 import { homedir } from "node:os";
 
-import { DEFAULT_SETTINGS, AgentMCPSettingsTab, type PluginSettings } from "./settings";
+import { DEFAULT_SETTINGS, AgentMCPSettingsTab, type PluginSettings, type TerminalSettings } from "./settings";
 import { createEditorTools, getSelectionData } from "./tools/editor";
 import { createTasksTool } from "./tools/tasks";
 import type { ToolDefinition } from "./tools/types";
@@ -209,9 +209,21 @@ export default class ObsidianAgentMCP extends Plugin {
       cwd: t.cwd === "home" ? homedir() : this.basePath(),
       shell: t.shell.trim() || undefined,
       shellArgs,
-      startupCommand: t.startupCommand,
+      startupCommand: this.resolveStartupCommand(t),
       fontSize: t.fontSize,
     };
+  }
+
+  // Claude Code backend uses the user's free-text startup command. The Ollama
+  // backend launches Claude Code via `ollama launch claude`, which points it at
+  // a local Ollama model — everything downstream (IDE connection, MCP tools,
+  // diff previews) behaves identically because it is still Claude Code.
+  private resolveStartupCommand(t: TerminalSettings): string {
+    if (t.backend === "ollama") {
+      const model = t.ollamaModel.trim();
+      return model ? `ollama launch claude --model ${model}` : "ollama launch claude";
+    }
+    return t.startupCommand;
   }
 
   private async openTerminalView(): Promise<void> {
