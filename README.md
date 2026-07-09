@@ -9,7 +9,7 @@
 ## What it does
 
 ### Built-in terminal
-- Full terminal emulator inside Obsidian, powered by [xterm.js](https://github.com/xtermjs/xterm.js) and a native PTY.
+- Full terminal emulator inside Obsidian, powered by [xterm.js](https://github.com/xtermjs/xterm.js) and a small pseudo-terminal bridge that runs on your system's Python 3 — no native binaries are bundled or compiled.
 - Opens as a side panel. Honors your `$SHELL`, starts in the vault root by default, and can auto-run a startup command like `claude` on open.
 - Use the ribbon icon or the **"Open Agent Terminal"** command.
 
@@ -41,13 +41,19 @@ When Claude Code is connected as an IDE, it routes file edits through the IDE in
 
 ---
 
+## Requirements
+
+- **Obsidian** desktop on macOS or Linux. Mobile is not supported; on Windows everything except the built-in terminal works (see [Compatibility](#compatibility)).
+- **Python 3** available on your `PATH` (or set an explicit path in settings). It runs a small standard-library pseudo-terminal bridge for the built-in terminal — there are **no pip packages to install**. Use the **Check** button in settings to verify it.
+- A coding-agent CLI to drive — e.g. [Claude Code](https://docs.claude.com/en/docs/claude-code), Codex, or a local model via [Ollama](https://ollama.com).
+
 ## Installation
 
 ### Option A: Manual install (no build required)
 
-1. Download the platform-matching release zip (e.g. `obsidian-agent-mcp-macos-arm64.zip`) from the [latest release](../../releases/latest)
-2. Unzip into `.obsidian/plugins/obsidian-agent-mcp/` inside your vault — the folder must contain `main.js`, `manifest.json`, and the `node-pty/` directory
-3. Go to **Obsidian → Settings → Community plugins** → refresh → toggle **Agent MCP** on
+1. Download `main.js` and `manifest.json` from the [latest release](../../releases/latest).
+2. Create `.obsidian/plugins/obsidian-agent-mcp/` inside your vault and place both files there.
+3. Go to **Obsidian → Settings → Community plugins** → refresh → toggle **Agent MCP** on.
 
 ### Option B: Build from source
 
@@ -55,11 +61,11 @@ When Claude Code is connected as an IDE, it routes file edits through the IDE in
 git clone https://github.com/rospaans/obsidian-agent-mcp
 cd obsidian-agent-mcp
 npm install
-cp .env.example .env          # edit to point at your vault's plugin folder
+cp .env.example .env          # optional: point at your vault's plugin folder
 npm run build
 ```
 
-`npm install` compiles `node-pty` against your current Electron/Node ABI. `npm run build` bundles `main.js` and copies the `node-pty` runtime next to it. If `OBSIDIAN_PLUGIN_DIR` is set in `.env`, the build also deploys the files directly into your vault.
+`npm run build` bundles the whole plugin — including the Python bridge script — into a single `main.js`. If `OBSIDIAN_PLUGIN_DIR` is set in `.env`, the build also deploys `main.js` and `manifest.json` into your vault.
 
 ---
 
@@ -150,6 +156,8 @@ The IDE connection is still automatic — Claude Code discovers Obsidian via the
 
 **Settings → Agent MCP**
 
+- **Agent backend** — Claude Code, or Ollama (local model). See [With a local model via Ollama](#with-a-local-model-via-ollama).
+- **Terminal → Python path** — Python 3 interpreter used to run the pseudo-terminal bridge. Blank uses `python3` from your `PATH`. The **Check** button verifies it.
 - **Terminal → Shell** — path to the shell binary. Defaults to `$SHELL`.
 - **Terminal → Shell arguments** — space-separated arguments (e.g. `-l`).
 - **Terminal → Startup command** — typed into the shell on open (e.g. `claude`).
@@ -177,17 +185,18 @@ export function createMyTool(/* any context you need */): ToolDefinition {
 }
 ```
 
-**2. Add a toggle to `src/settings.ts`** (inside `enabledTools`, `DEFAULT_SETTINGS`, and `AgentMCPSettingsTab.display()`).
-
-**3. Register it in `src/main.ts`** inside `getActiveTools()`:
+**2. Register it in `src/main.ts`** inside `getActiveTools()`:
 
 ```typescript
-if (this.settings.enabledTools.myTool) {
-  tools.push(createMyTool(/* context */));
+private getActiveTools(): ToolDefinition[] {
+  return [
+    ...createEditorTools(this.app, () => this.latestSelection),
+    createMyTool(/* context */),
+  ];
 }
 ```
 
-Both the WebSocket and HTTP/SSE transports pick it up automatically. No changes to server or routing code.
+Both the WebSocket and HTTP/SSE transports pick it up automatically. No changes to server or routing code. (If you want it toggleable, add a setting in `src/settings.ts` and gate the `push` on it.)
 
 ---
 
@@ -197,9 +206,9 @@ Both the WebSocket and HTTP/SSE transports pick it up automatically. No changes 
 - A unique auth token is generated fresh on every Obsidian launch via `crypto.randomUUID()`
 - The WebSocket server rejects any connection that does not present the correct token in the `x-claude-code-ide-authorization` header
 - The MCP HTTP/SSE server validates the `Host` header and rejects any request carrying an `Origin` header, blocking browser-based and DNS-rebinding attacks
-- Only file paths, cursor positions, and selected text are shared — file contents are never read or transmitted by the plugin itself
+- Only file paths, cursor positions, and selected text are streamed to connected agents. The plugin reads a note's content locally only to render a diff preview, and never transmits file contents itself
 - Stale lock files from crashed Obsidian processes are cleaned up automatically on startup
-- The built-in terminal spawns processes with the same privileges as Obsidian. Treat it like any other terminal on your machine.
+- The built-in terminal spawns processes (a shell, plus your configured Python 3 for the PTY bridge) with the same privileges as Obsidian. Treat it like any other terminal on your machine.
 
 ---
 
@@ -210,13 +219,14 @@ This plugin is licensed under the **MIT License** (see [`LICENSE`](LICENSE)).
 Bundled third-party software (see [`NOTICE`](NOTICE) for full attribution):
 
 - **[xterm.js](https://github.com/xtermjs/xterm.js)** (MIT) — terminal emulator in the browser
-- **[node-pty-prebuilt-multiarch](https://github.com/homebridge/node-pty-prebuilt-multiarch)** (MIT), a prebuilt fork of Microsoft's **[node-pty](https://github.com/microsoft/node-pty)** (MIT) — native pseudo-terminal bindings
+
+The built-in terminal also runs a small pseudo-terminal bridge on your system's Python 3 at runtime. Python is a prerequisite you provide; it is not bundled with the plugin.
 
 ---
 
 ## Compatibility
 
-- macOS: tested on Apple Silicon
-- Windows / Linux: build pipeline targets both, but less tested
-- Obsidian minimum version: 1.0.0
-- Desktop only (no mobile support — native PTY bindings are not available on mobile)
+- **macOS**: fully supported (tested on Apple Silicon). Requires Python 3 for the built-in terminal.
+- **Linux**: fully supported. Requires Python 3 for the built-in terminal.
+- **Windows**: the MCP server, selection streaming, and diff previews work, but the **built-in terminal is not yet supported** — the bridge relies on the Unix `pty` module. A ConPTY backend is planned.
+- **Desktop only** — no mobile support.
