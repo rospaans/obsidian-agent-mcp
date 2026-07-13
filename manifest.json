@@ -1,10 +1,10 @@
 {
   "id": "agent-mcp",
   "name": "Agent MCP",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "minAppVersion": "1.7.7",
-  "description": "Run coding agents (Claude Code, Codex, Ollama) inside Obsidian. Ships a built-in terminal and exposes the active selection and open editors over MCP.",
+  "description": "Run coding agents (Claude Code, Codex, Ollama) in a built-in terminal, and expose the active file selection and open editors to them over MCP.",
   "author": "Robert Spaans",
-  "authorUrl": "https://github.com/rospaans/obsidian-agent-mcp",
+  "authorUrl": "https://github.com/rospaans",
   "isDesktopOnly": true
 }

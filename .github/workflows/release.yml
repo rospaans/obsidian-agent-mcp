@@ -14,6 +14,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # Required to generate signed build-provenance attestations for the assets,
+      # letting users cryptographically verify they were built from this repo.
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -37,6 +41,10 @@ jobs:
           cp main.js manifest.json release/
           if [ -f styles.css ]; then cp styles.css release/; fi
           ls -la release
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: "release/*"
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:

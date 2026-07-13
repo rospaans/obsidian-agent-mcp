@@ -10631,6 +10631,7 @@ var AgentTerminalView = class extends import_obsidian3.ItemView {
       shell: file,
       args,
       cwd: cfg.cwd,
+      env: cfg.env,
       cols: Math.max(cols, 2),
       rows: Math.max(rows, 2)
     });
@@ -10680,7 +10681,7 @@ var AgentTerminalView = class extends import_obsidian3.ItemView {
   }
 };
 function readTheme() {
-  const styles = getComputedStyle(document.body);
+  const styles = activeWindow.getComputedStyle(activeDocument.body);
   const v = (name, fallback) => styles.getPropertyValue(name).trim() || fallback;
   return {
     background: v("--background-primary", "#1e1e1e"),
@@ -10908,7 +10909,7 @@ var ObsidianAgentMCP = class extends import_obsidian5.Plugin {
       this.prevStateKey = null;
       this.scheduleBroadcast();
     });
-    this.registerDomEvent(document, "selectionchange", () => this.scheduleBroadcast());
+    this.registerDomEvent(activeDocument, "selectionchange", () => this.scheduleBroadcast());
     this.addCommand({
       id: "send-to-claude",
       name: "Send to Claude",
@@ -10971,7 +10972,12 @@ var ObsidianAgentMCP = class extends import_obsidian5.Plugin {
       fontSize: t.fontSize,
       backend: t.backend,
       resolveStartupCommand: (backend) => this.resolveStartupCommand(backend),
-      onBackendChange: (backend) => this.persistBackend(backend)
+      onBackendChange: (backend) => this.persistBackend(backend),
+      // Exporting the IDE server port makes Claude Code auto-connect to Obsidian
+      // on startup — reading the lock file for the auth token — exactly as it does
+      // in an IDE-integrated terminal. Without it the user must run `/ide` and pick
+      // Obsidian manually. Only set once the server is actually listening.
+      env: this.port ? { CLAUDE_CODE_SSE_PORT: String(this.port) } : void 0
     };
   }
   // The agent command that auto-runs when a terminal session starts, so the user

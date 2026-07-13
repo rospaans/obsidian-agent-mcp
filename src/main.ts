@@ -149,7 +149,7 @@ export default class ObsidianAgentMCP extends Plugin {
 
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.scheduleBroadcast()));
     this.registerDomEvent(window, "focus", () => { this.prevStateKey = null; this.scheduleBroadcast(); });
-    this.registerDomEvent(document, "selectionchange", () => this.scheduleBroadcast());
+    this.registerDomEvent(activeDocument, "selectionchange", () => this.scheduleBroadcast());
 
     this.addCommand({
       id: "send-to-claude",
@@ -231,6 +231,11 @@ export default class ObsidianAgentMCP extends Plugin {
       backend: t.backend,
       resolveStartupCommand: backend => this.resolveStartupCommand(backend),
       onBackendChange: backend => this.persistBackend(backend),
+      // Exporting the IDE server port makes Claude Code auto-connect to Obsidian
+      // on startup — reading the lock file for the auth token — exactly as it does
+      // in an IDE-integrated terminal. Without it the user must run `/ide` and pick
+      // Obsidian manually. Only set once the server is actually listening.
+      env: this.port ? { CLAUDE_CODE_SSE_PORT: String(this.port) } : undefined,
     };
   }
 

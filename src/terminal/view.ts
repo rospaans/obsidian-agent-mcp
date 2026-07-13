@@ -20,6 +20,8 @@ export interface TerminalConfig {
   shellArgs?: string[];
   fontFamily?: string;
   fontSize?: number;
+  /** Extra environment variables for the agent process (e.g. CLAUDE_CODE_SSE_PORT). */
+  env?: Record<string, string>;
   /** Agent the terminal starts with. */
   backend: AgentBackend;
   /** Command auto-run to launch the given agent, so a bare shell is never shown. */
@@ -220,6 +222,7 @@ export class AgentTerminalView extends ItemView {
       shell: file,
       args,
       cwd: cfg.cwd,
+      env: cfg.env,
       cols: Math.max(cols, 2),
       rows: Math.max(rows, 2),
     });
@@ -264,7 +267,7 @@ export class AgentTerminalView extends ItemView {
 }
 
 function readTheme() {
-  const styles = getComputedStyle(document.body);
+  const styles = activeWindow.getComputedStyle(activeDocument.body);
   const v = (name: string, fallback: string) => styles.getPropertyValue(name).trim() || fallback;
   return {
     background: v("--background-primary", "#1e1e1e"),

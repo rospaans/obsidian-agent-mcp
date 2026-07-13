@@ -107,14 +107,15 @@ Register both channels once, then you're done forever.
 claude mcp add --transport http agent-mcp http://127.0.0.1:27183/mcp
 ```
 
-The IDE connection is automatic — nothing to register. Claude Code scans `~/.claude/ide/` on startup and discovers the lock file the plugin wrote on launch.
+The IDE connection is automatic — nothing to register. The plugin's built-in terminal exports `CLAUDE_CODE_SSE_PORT`, so Claude Code launched there **auto-connects to Obsidian on startup** (reading the lock file in `~/.claude/ide/` for the auth token), exactly like an IDE-integrated terminal.
 
 Then:
 
-1. Open a terminal inside Obsidian (ribbon icon or command palette) — it launches straight into `claude`. (You can also run `claude` from any external terminal with your vault as cwd.)
-2. Claude prompts you to connect to the discovered Obsidian IDE — accept once.
-3. Inside Claude, `/mcp` should list `agent-mcp` as connected.
-4. Ask something like *"What file am I in?"* → Claude will call `getLatestSelection`.
+1. Open a terminal inside Obsidian (ribbon icon or command palette) — it launches straight into `claude` and connects to Obsidian automatically.
+2. Inside Claude, `/mcp` should list `agent-mcp` as connected.
+3. Ask something like *"What file am I in?"* → Claude will call `getLatestSelection`.
+
+> Running `claude` from an **external** terminal instead? It won't have that env var, so run `/ide` inside Claude once and pick **Obsidian** to connect.
 
 Use the command palette command **"Send to Claude"** in Obsidian to explicitly push your current selection as a context mention.
 
