@@ -1,35 +1,19 @@
 name: Release
 
+# The Obsidian community directory expects a bare-version tag (e.g. 1.0.0, no
+# "v" prefix) whose value matches manifest.json "version", with main.js,
+# manifest.json and styles.css attached to the release as individual assets.
 on:
   push:
     tags:
-      - "v*"
+      - "[0-9]+.[0-9]+.[0-9]+"
   workflow_dispatch:
 
 jobs:
-  build:
-    name: Build ${{ matrix.label }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-14
-            label: macos-arm64
-            platform: darwin
-            arch: arm64
-          - os: macos-13
-            label: macos-x64
-            platform: darwin
-            arch: x64
-          - os: ubuntu-latest
-            label: linux-x64
-            platform: linux
-            arch: x64
-          - os: windows-latest
-            label: windows-x64
-            platform: win32
-            arch: x64
-    runs-on: ${{ matrix.os }}
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -39,40 +23,22 @@ jobs:
         run: npm ci
       - name: Build
         run: npm run build
-        shell: bash
-      - name: Package artifact
-        shell: bash
+      - name: Verify tag matches manifest version
         run: |
-          mkdir -p artifact/obsidian-agent-mcp
-          cp main.js manifest.json artifact/obsidian-agent-mcp/
-          cp -r node-pty artifact/obsidian-agent-mcp/
-          if [ -f styles.css ]; then cp styles.css artifact/obsidian-agent-mcp/; fi
-      - uses: actions/upload-artifact@v4
-        with:
-          name: obsidian-agent-mcp-${{ matrix.label }}
-          path: artifact/obsidian-agent-mcp
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-      - name: Zip per-platform bundles
+          tag="${GITHUB_REF_NAME}"
+          manifest_version="$(node -p "require('./manifest.json').version")"
+          if [ "$tag" != "$manifest_version" ]; then
+            echo "::error::Tag '$tag' does not match manifest.json version '$manifest_version'"
+            exit 1
+          fi
+      - name: Collect release assets
         run: |
-          cd artifacts
-          for dir in */; do
-            name="${dir%/}"
-            (cd "$dir" && zip -r "../${name}.zip" .)
-          done
-          ls -la
+          mkdir -p release
+          cp main.js manifest.json release/
+          if [ -f styles.css ]; then cp styles.css release/; fi
+          ls -la release
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/*.zip
+          files: release/*
           generate_release_notes: true
