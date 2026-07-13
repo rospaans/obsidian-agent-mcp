@@ -1,0 +1,92 @@
+/*
+ * Bundled to styles.css at build time (esbuild inlines the xterm @import). This
+ * is the file Obsidian loads automatically for the plugin, so all plugin styling
+ * lives here rather than being assigned inline in TypeScript.
+ */
+@import "@xterm/xterm/css/xterm.css";
+
+/* ── Terminal view ────────────────────────────────────────────────────────── */
+.agent-mcp-terminal-container {
+  padding: 0;
+  height: 100%;
+  background: var(--background-primary);
+}
+
+.agent-mcp-terminal-host {
+  width: 100%;
+  height: 100%;
+}
+
+.agent-mcp-terminal-host .xterm-viewport {
+  overflow-y: auto;
+}
+
+/* ── Diff preview view ────────────────────────────────────────────────────── */
+.agent-mcp-diff {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 0;
+}
+
+.agent-mcp-diff-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  flex: 0 0 auto;
+}
+
+.agent-mcp-diff-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-mcp-diff-stat {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-right: auto;
+}
+
+.agent-mcp-diff-hint {
+  font-size: 12px;
+  color: var(--text-accent);
+}
+
+.agent-mcp-diff-body {
+  flex: 1 1 auto;
+  overflow: auto;
+  font-family: var(--font-monospace, monospace);
+  font-size: var(--font-text-size, 13px);
+  line-height: 1.5;
+  padding: 4px 0;
+}
+
+.agent-mcp-diff-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 0 12px 0 8px;
+  border-left: 3px solid transparent;
+}
+
+.agent-mcp-diff-line.is-add {
+  background: rgba(46, 160, 67, 0.15);
+  border-left-color: rgba(46, 160, 67, 0.8);
+}
+
+.agent-mcp-diff-line.is-del {
+  background: rgba(248, 81, 73, 0.15);
+  border-left-color: rgba(248, 81, 73, 0.8);
+}
+
+.agent-mcp-diff-line.is-ctx {
+  color: var(--text-muted);
+}
+
+.agent-mcp-diff-empty {
+  padding: 8px 12px;
+  color: var(--text-muted);
+}

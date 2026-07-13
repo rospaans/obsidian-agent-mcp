@@ -1,4 +1,4 @@
-import { Plugin, FileSystemAdapter, WorkspaceLeaf, MarkdownView, TFile } from "obsidian";
+import { Plugin, WorkspaceLeaf, MarkdownView, TFile } from "obsidian";
 import { createServer, Server, IncomingMessage, ServerResponse } from "node:http";
 import { Socket } from "node:net";
 import { randomUUID } from "node:crypto";
@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 
 import { DEFAULT_SETTINGS, AgentMCPSettingsTab, type PluginSettings, type TerminalSettings } from "./settings";
-import { createEditorTools, getSelectionData } from "./tools/editor";
+import { createEditorTools, getSelectionData, getVaultBasePath } from "./tools/editor";
 import type { ToolDefinition } from "./tools/types";
 import { AgentTerminalView, AGENT_TERMINAL_VIEW_TYPE, type TerminalConfig } from "./terminal/view";
 import { AgentDiffView, AGENT_DIFF_VIEW_TYPE } from "./diff/view";
@@ -42,7 +42,7 @@ function createLockFile(port: number, pid: number, vaultPath: string, authToken:
 }
 
 function removeLockFile(port: number) {
-  try { unlinkSync(join(LOCK_DIR, `${port}.lock`)); } catch { }
+  try { unlinkSync(join(LOCK_DIR, `${port}.lock`)); } catch { /* already gone */ }
 }
 
 function cleanStaleLockFiles() {
@@ -50,12 +50,15 @@ function cleanStaleLockFiles() {
     for (const file of readdirSync(LOCK_DIR).filter(f => f.endsWith(".lock"))) {
       const p = join(LOCK_DIR, file);
       try {
-        const data = JSON.parse(readFileSync(p, "utf-8"));
+        const data = JSON.parse(readFileSync(p, "utf-8")) as { ideName?: string; pid?: number };
         if (data.ideName !== "Obsidian") continue;
-        process.kill(data.pid, 0);
-      } catch { try { unlinkSync(p); } catch { } }
+        if (typeof data.pid === "number") process.kill(data.pid, 0);
+      } catch {
+        // Unreadable, malformed, or the owning process is gone — remove the lock.
+        try { unlinkSync(p); } catch { /* already gone */ }
+      }
     }
-  } catch { }
+  } catch { /* lock dir missing — nothing to clean */ }
 }
 
 // ── WebSocket helpers ────────────────────────────────────────────────────────
@@ -97,6 +100,12 @@ function makeFrame(opcode: number, data: string | Buffer): Buffer {
 
 interface Client { socket: Socket; buffer: Buffer; alive: boolean; }
 
+// Coerce an untyped JSON value to a string, treating anything non-string as
+// empty. Used for the loosely-typed argument records Claude Code sends.
+function asString(v: unknown): string {
+  return typeof v === "string" ? v : "";
+}
+
 export default class ObsidianAgentMCP extends Plugin {
   private clients = new Set<Client>();
   private server: Server | null = null;
@@ -104,12 +113,12 @@ export default class ObsidianAgentMCP extends Plugin {
   private mcpSessions = new Map<string, ServerResponse>();
   private codexSseSessions = new Set<ServerResponse>();
   private port = 0;
-  private pingInterval: ReturnType<typeof setInterval> | null = null;
-  private broadcastTimer: ReturnType<typeof setTimeout> | null = null;
+  private pingInterval: number | null = null;
+  private broadcastTimer: number | null = null;
   private prevStateKey: string | null = null;
   private authToken = "";
   private latestSelection = getSelectionData(this.app);
-  private lockRefreshInterval: ReturnType<typeof setInterval> | null = null;
+  private lockRefreshInterval: number | null = null;
   private diffLeaves = new Map<string, WorkspaceLeaf>();
   private pendingDiffResolvers = new Map<string, (r: object) => void>();
   // The note leaf the edit belongs to, captured before the diff opens so we can
@@ -133,9 +142,9 @@ export default class ObsidianAgentMCP extends Plugin {
     // Claude Code instances housekeep ~/.claude/ide/ and can remove our lock,
     // which silently kills selection streaming until the next plugin reload.
     // Re-assert it on a slow interval so a deleted lock self-heals.
-    this.lockRefreshInterval = setInterval(() => {
+    this.lockRefreshInterval = window.setInterval(() => {
       if (existsSync(join(LOCK_DIR, `${this.port}.lock`))) return;
-      try { createLockFile(this.port, process.pid, vaultPath, this.authToken); } catch { }
+      try { createLockFile(this.port, process.pid, vaultPath, this.authToken); } catch { /* best-effort re-assert */ }
     }, 10_000);
 
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.scheduleBroadcast()));
@@ -161,31 +170,28 @@ export default class ObsidianAgentMCP extends Plugin {
 
     this.addCommand({
       id: "open-agent-terminal",
-      name: "Open Agent Terminal",
-      callback: () => this.openTerminalView(),
+      name: "Open agent terminal",
+      callback: () => void this.openTerminalView(),
     });
 
-    this.addRibbonIcon("terminal", "Open Agent Terminal", () => this.openTerminalView());
+    this.addRibbonIcon("terminal", "Open agent terminal", () => void this.openTerminalView());
 
     this.startMcpHttpServer();
-    console.log(`[agent-mcp] WebSocket IDE server on 127.0.0.1:${this.port}`);
   }
 
   onunload() {
-    if (this.broadcastTimer) clearTimeout(this.broadcastTimer);
-    if (this.pingInterval) clearInterval(this.pingInterval);
-    if (this.lockRefreshInterval) clearInterval(this.lockRefreshInterval);
+    if (this.broadcastTimer) window.clearTimeout(this.broadcastTimer);
+    if (this.pingInterval) window.clearInterval(this.pingInterval);
+    if (this.lockRefreshInterval) window.clearInterval(this.lockRefreshInterval);
     for (const c of this.clients) c.socket.destroy();
     this.clients.clear();
     this.server?.close();
     this.mcpServer?.close();
     if (this.port) removeLockFile(this.port);
-    this.app.workspace.detachLeavesOfType(AGENT_TERMINAL_VIEW_TYPE);
-    this.app.workspace.detachLeavesOfType(AGENT_DIFF_VIEW_TYPE);
   }
 
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, (await this.loadData()) as Partial<PluginSettings>);
   }
 
   async saveSettings() {
@@ -193,13 +199,13 @@ export default class ObsidianAgentMCP extends Plugin {
   }
 
   private basePath(): string {
-    return (this.app.vault.adapter as FileSystemAdapter).getBasePath();
+    return getVaultBasePath(this.app);
   }
 
   // ── Terminal ───────────────────────────────────────────────────────────────
 
   private pluginDir(): string {
-    return join(this.basePath(), ".obsidian", "plugins", this.manifest.id);
+    return join(this.basePath(), this.app.vault.configDir, "plugins", this.manifest.id);
   }
 
   private getTerminalConfig(): TerminalConfig {
@@ -233,13 +239,13 @@ export default class ObsidianAgentMCP extends Plugin {
   private async openTerminalView(): Promise<void> {
     const existing = this.app.workspace.getLeavesOfType(AGENT_TERMINAL_VIEW_TYPE);
     if (existing.length > 0) {
-      this.app.workspace.revealLeaf(existing[0]);
+      void this.app.workspace.revealLeaf(existing[0]);
       return;
     }
     const leaf: WorkspaceLeaf | null = this.app.workspace.getRightLeaf(false);
     if (!leaf) return;
     await leaf.setViewState({ type: AGENT_TERMINAL_VIEW_TYPE, active: true });
-    this.app.workspace.revealLeaf(leaf);
+    void this.app.workspace.revealLeaf(leaf);
   }
 
   // ── Tool registry ──────────────────────────────────────────────────────────
@@ -251,8 +257,8 @@ export default class ObsidianAgentMCP extends Plugin {
   // ── Broadcasting ───────────────────────────────────────────────────────────
 
   private scheduleBroadcast() {
-    if (this.broadcastTimer) clearTimeout(this.broadcastTimer);
-    this.broadcastTimer = setTimeout(() => { this.broadcastTimer = null; this.doBroadcast(); }, 100);
+    if (this.broadcastTimer) window.clearTimeout(this.broadcastTimer);
+    this.broadcastTimer = window.setTimeout(() => { this.broadcastTimer = null; this.doBroadcast(); }, 100);
   }
 
   private doBroadcast() {
@@ -296,7 +302,7 @@ export default class ObsidianAgentMCP extends Plugin {
       case "openDiff":
         return this.openDiff(args ?? {});
       case "close_tab": {
-        const tab = String(args?.tab_name ?? "");
+        const tab = asString(args?.tab_name);
         // If a diff for this tab is still blocking, the user has decided in the
         // terminal — unblock it. (EXPERIMENT: treat any close as accepted.)
         const resolver = this.pendingDiffResolvers.get(tab);
@@ -329,9 +335,9 @@ export default class ObsidianAgentMCP extends Plugin {
   }
 
   private async openDiff(args: Record<string, unknown>): Promise<object> {
-    const filePath = String(args.new_file_path ?? args.old_file_path ?? "");
-    const newContent = String(args.new_file_contents ?? "");
-    const tabName = String(args.tab_name ?? filePath);
+    const filePath = asString(args.new_file_path) || asString(args.old_file_path);
+    const newContent = asString(args.new_file_contents);
+    const tabName = asString(args.tab_name) || filePath;
     const rel = this.toRelativePath(filePath);
     const fileName = rel.split("/").pop() || rel;
 
@@ -403,7 +409,7 @@ export default class ObsidianAgentMCP extends Plugin {
     const leaves = this.app.workspace.getLeavesOfType(AGENT_TERMINAL_VIEW_TYPE);
     if (leaves.length === 0) return;
     const leaf = leaves[0];
-    this.app.workspace.revealLeaf(leaf);
+    void this.app.workspace.revealLeaf(leaf);
     const view = leaf.view;
     if (view instanceof AgentTerminalView) view.focusTerminal();
   }
@@ -431,7 +437,7 @@ export default class ObsidianAgentMCP extends Plugin {
           result: {
             protocolVersion: (msg.params?.protocolVersion as string) || "2025-03-26",
             capabilities: { tools: {} },
-            serverInfo: { name: "obsidian-agent-mcp", version: this.manifest.version },
+            serverInfo: { name: "agent-mcp", version: this.manifest.version },
           },
         };
 
@@ -477,7 +483,8 @@ export default class ObsidianAgentMCP extends Plugin {
     }
     const wsKey = headers["sec-websocket-key"];
     if (!wsKey || Array.isArray(wsKey)) { socket.write("HTTP/1.1 400 Bad Request\r\n\r\n"); socket.destroy(); return; }
-    const protocol = headers["sec-websocket-protocol"];
+    const protocolHeader = headers["sec-websocket-protocol"];
+    const protocol = Array.isArray(protocolHeader) ? protocolHeader[0] : protocolHeader;
     socket.write(
       "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
       `Sec-WebSocket-Accept: ${computeAcceptKey(wsKey)}\r\n` +
@@ -493,7 +500,7 @@ export default class ObsidianAgentMCP extends Plugin {
   private async handleWsText(client: Client, payload: Buffer): Promise<void> {
     let msg: { id: unknown; method: string; params?: Record<string, unknown>; jsonrpc: string };
     try {
-      msg = JSON.parse(payload.toString());
+      msg = JSON.parse(payload.toString()) as { id: unknown; method: string; params?: Record<string, unknown>; jsonrpc: string };
     } catch {
       if (client.socket.writable) {
         client.socket.write(makeFrame(OPCODE.TEXT, JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } })));
@@ -518,7 +525,7 @@ export default class ObsidianAgentMCP extends Plugin {
       else if (frame.opcode === OPCODE.CLOSE) { client.socket.write(makeFrame(OPCODE.CLOSE, Buffer.alloc(0))); client.socket.destroy(); this.clients.delete(client); break; }
       else if (frame.opcode === OPCODE.TEXT) {
         const payload = frame.payload;
-        this.handleWsText(client, payload);
+        void this.handleWsText(client, payload);
       }
     }
   }
@@ -529,12 +536,12 @@ export default class ObsidianAgentMCP extends Plugin {
       this.server.on("upgrade", (req, socket, head) => {
         const s = socket as Socket;
         if (head.length > 0) s.unshift(head);
-        this.handleClient(s, req.headers as Record<string, string | string[] | undefined>);
+        this.handleClient(s, req.headers);
       });
       this.server.on("error", reject);
       this.server.listen(0, "127.0.0.1", () => {
         const addr = this.server!.address() as { port: number };
-        this.pingInterval = setInterval(() => {
+        this.pingInterval = window.setInterval(() => {
           for (const c of this.clients) {
             if (!c.alive) { c.socket.destroy(); this.clients.delete(c); continue; }
             c.alive = false;
@@ -550,7 +557,7 @@ export default class ObsidianAgentMCP extends Plugin {
 
   private isLocalhostRequest(req: IncomingMessage, res: ServerResponse): boolean {
     // Block DNS-rebinding: the Host header must be our exact bind address.
-    const host = Array.isArray(req.headers["host"]) ? req.headers["host"][0] : req.headers["host"];
+    const host = req.headers.host;
     if (!host || !new Set([`127.0.0.1:${MCP_HTTP_PORT}`, `localhost:${MCP_HTTP_PORT}`]).has(host)) {
       res.writeHead(403); res.end(); return false;
     }
@@ -621,7 +628,7 @@ export default class ObsidianAgentMCP extends Plugin {
       if (url.pathname === "/mcp" && req.method === "POST") {
         let body = "";
         req.on("data", (chunk: Buffer) => body += chunk.toString());
-        req.on("end", async () => {
+        req.on("end", () => void (async () => {
           try {
             const result = await this.handleStreamableHttpPayload(this.parseJsonRpcBody(body));
             if (result.status === 200) {
@@ -643,7 +650,7 @@ export default class ObsidianAgentMCP extends Plugin {
             });
             res.end();
           }
-        });
+        })());
         return;
       }
 
@@ -665,16 +672,16 @@ export default class ObsidianAgentMCP extends Plugin {
         const sseRes = this.mcpSessions.get(url.searchParams.get("sessionId") ?? "");
         let body = "";
         req.on("data", (chunk: Buffer) => body += chunk.toString());
-        req.on("end", async () => {
+        req.on("end", () => void (async () => {
           try {
-            const msg = JSON.parse(body);
+            const msg = JSON.parse(body) as { jsonrpc?: string; id?: unknown; method?: string; params?: Record<string, unknown> };
             res.writeHead(202, { "MCP-Protocol-Version": protocolVersion }); res.end();
             if (msg.id != null && sseRes && !sseRes.writableEnded) {
-              const response = await this.handleRpc(msg);
+              const response = await this.handleRpc({ jsonrpc: "2.0", id: msg.id, method: msg.method ?? "", params: msg.params });
               sseRes.write(`event: message\ndata: ${JSON.stringify(response)}\n\n`);
             }
           } catch { res.writeHead(400, { "MCP-Protocol-Version": protocolVersion }); res.end(); }
-        });
+        })());
         return;
       }
 
@@ -683,8 +690,6 @@ export default class ObsidianAgentMCP extends Plugin {
     this.mcpServer.on("error", (err: NodeJS.ErrnoException) => {
       if (err.code !== "EADDRINUSE") console.error("[agent-mcp] MCP HTTP error:", err);
     });
-    this.mcpServer.listen(MCP_HTTP_PORT, "127.0.0.1", () =>
-      console.log(`[agent-mcp] MCP HTTP server on 127.0.0.1:${MCP_HTTP_PORT}`)
-    );
+    this.mcpServer.listen(MCP_HTTP_PORT, "127.0.0.1");
   }
 }

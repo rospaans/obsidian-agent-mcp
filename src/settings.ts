@@ -39,9 +39,7 @@ export class AgentMCPSettingsTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl("h2", { text: "Agent MCP" });
-
-    containerEl.createEl("h3", { text: "Agent backend" });
+    new Setting(containerEl).setName("Agent backend").setHeading();
 
     new Setting(containerEl)
       .setName("Backend")
@@ -81,7 +79,7 @@ export class AgentMCPSettingsTab extends PluginSettingTab {
         );
     }
 
-    containerEl.createEl("h3", { text: "Terminal" });
+    new Setting(containerEl).setName("Terminal").setHeading();
 
     new Setting(containerEl)
       .setName("Python path")

@@ -6,7 +6,6 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { CanvasAddon } from "@xterm/addon-canvas";
 
 import { defaultShell, spawnShell, type IPty } from "./pty";
-import { ensureTerminalStyles } from "./styles";
 
 export const AGENT_TERMINAL_VIEW_TYPE = "agent-terminal";
 
@@ -28,7 +27,7 @@ export class AgentTerminalView extends ItemView {
   private fit: FitAddon | null = null;
   private pty: IPty | null = null;
   private resizeObserver: ResizeObserver | null = null;
-  private resizeTimer: ReturnType<typeof setTimeout> | null = null;
+  private resizeTimer: number | null = null;
   private disposers: Array<{ dispose(): void }> = [];
 
   constructor(
@@ -44,7 +43,7 @@ export class AgentTerminalView extends ItemView {
   }
 
   getDisplayText(): string {
-    return "Agent Terminal";
+    return "Agent terminal";
   }
 
   getIcon(): string {
@@ -56,17 +55,11 @@ export class AgentTerminalView extends ItemView {
   }
 
   async onOpen(): Promise<void> {
-    ensureTerminalStyles();
     const container = this.contentEl;
     container.empty();
     container.addClass("agent-mcp-terminal-container");
-    container.style.padding = "0";
-    container.style.height = "100%";
-    container.style.background = "var(--background-primary)";
 
     const host = container.createDiv({ cls: "agent-mcp-terminal-host" });
-    host.style.width = "100%";
-    host.style.height = "100%";
 
     const cfg = this.configProvider();
 
@@ -113,9 +106,9 @@ export class AgentTerminalView extends ItemView {
     } catch (err) {
       term.writeln("\x1b[31mFailed to start shell:\x1b[0m " + String(err));
       term.writeln("");
-      term.writeln("The native PTY module could not be loaded. If you built from source,");
-      term.writeln("run `npm install` and `npm run build` again. If you installed the release,");
-      term.writeln("make sure the `node-pty/` folder is present next to main.js.");
+      term.writeln("The Python PTY bridge could not be started. Make sure a Python 3");
+      term.writeln("interpreter is available and set its path in the plugin settings");
+      term.writeln("(Settings → Agent MCP → Python path → Check).");
       return;
     }
 
@@ -134,15 +127,15 @@ export class AgentTerminalView extends ItemView {
   private scheduleInitialFit(host: HTMLElement): void {
     // Two rAFs: first lets the browser flush layout after element insertion,
     // second lets xterm commit its initial render before we measure.
-    requestAnimationFrame(() => requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
       if (host.clientWidth === 0 || host.clientHeight === 0) return;
       this.applyResize();
     }));
   }
 
   private scheduleResize(): void {
-    if (this.resizeTimer) clearTimeout(this.resizeTimer);
-    this.resizeTimer = setTimeout(() => {
+    if (this.resizeTimer) window.clearTimeout(this.resizeTimer);
+    this.resizeTimer = window.setTimeout(() => {
       this.resizeTimer = null;
       this.applyResize();
     }, RESIZE_DEBOUNCE_MS);
@@ -195,7 +188,7 @@ export class AgentTerminalView extends ItemView {
 
   async onClose(): Promise<void> {
     if (this.resizeTimer) {
-      clearTimeout(this.resizeTimer);
+      window.clearTimeout(this.resizeTimer);
       this.resizeTimer = null;
     }
     for (const d of this.disposers) {

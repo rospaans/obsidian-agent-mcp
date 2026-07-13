@@ -17,7 +17,7 @@ function diffLines(oldStr: string, newStr: string): DiffRow[] {
   const b = newStr.length ? newStr.split("\n") : [];
   const n = a.length;
   const m = b.length;
-  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
   for (let i = n - 1; i >= 0; i--) {
     for (let j = m - 1; j >= 0; j--) {
       dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
@@ -67,71 +67,29 @@ export class AgentDiffView extends ItemView {
     const root = this.contentEl;
     root.empty();
     root.addClass("agent-mcp-diff");
-    root.style.display = "flex";
-    root.style.flexDirection = "column";
-    root.style.height = "100%";
-    root.style.padding = "0";
 
     const rows = diffLines(this.payload.oldContent, this.payload.newContent);
     const added = rows.filter(r => r.type === "add").length;
     const removed = rows.filter(r => r.type === "del").length;
 
     // ── Header ────────────────────────────────────────────────────────────────
-    const header = root.createDiv();
-    header.style.display = "flex";
-    header.style.alignItems = "center";
-    header.style.gap = "8px";
-    header.style.padding = "8px 12px";
-    header.style.borderBottom = "1px solid var(--background-modifier-border)";
-    header.style.flex = "0 0 auto";
-
-    const title = header.createSpan({ text: this.payload.fileName });
-    title.style.fontWeight = "600";
-    title.style.overflow = "hidden";
-    title.style.textOverflow = "ellipsis";
-    title.style.whiteSpace = "nowrap";
-
-    const stat = header.createSpan({ text: `+${added} -${removed}` });
-    stat.style.fontSize = "12px";
-    stat.style.color = "var(--text-muted)";
-    stat.style.marginRight = "auto";
-
-    const hint = header.createSpan({ text: "Approve in the terminal ›" });
-    hint.style.fontSize = "12px";
-    hint.style.color = "var(--text-accent)";
+    const header = root.createDiv({ cls: "agent-mcp-diff-header" });
+    header.createSpan({ text: this.payload.fileName, cls: "agent-mcp-diff-title" });
+    header.createSpan({ text: `+${added} -${removed}`, cls: "agent-mcp-diff-stat" });
+    header.createSpan({ text: "Approve in the terminal ›", cls: "agent-mcp-diff-hint" });
 
     // ── Diff body ───────────────────────────────────────────────────────────--
-    const body = root.createDiv();
-    body.style.flex = "1 1 auto";
-    body.style.overflow = "auto";
-    body.style.fontFamily = "var(--font-monospace, monospace)";
-    body.style.fontSize = "var(--font-text-size, 13px)";
-    body.style.lineHeight = "1.5";
-    body.style.padding = "4px 0";
+    const body = root.createDiv({ cls: "agent-mcp-diff-body" });
 
     for (const r of rows) {
-      const line = body.createDiv();
-      line.style.whiteSpace = "pre-wrap";
-      line.style.wordBreak = "break-word";
-      line.style.padding = "0 12px 0 8px";
-      line.style.borderLeft = "3px solid transparent";
+      const variant = r.type === "add" ? "is-add" : r.type === "del" ? "is-del" : "is-ctx";
+      const line = body.createDiv({ cls: `agent-mcp-diff-line ${variant}` });
       const prefix = r.type === "add" ? "+ " : r.type === "del" ? "- " : "  ";
-      if (r.type === "add") {
-        line.style.background = "rgba(46, 160, 67, 0.15)";
-        line.style.borderLeftColor = "rgba(46, 160, 67, 0.8)";
-      } else if (r.type === "del") {
-        line.style.background = "rgba(248, 81, 73, 0.15)";
-        line.style.borderLeftColor = "rgba(248, 81, 73, 0.8)";
-      } else {
-        line.style.color = "var(--text-muted)";
-      }
       line.setText(prefix + r.text);
     }
 
     if (rows.length === 0) {
-      const empty = body.createDiv({ text: "(no changes)" });
-      empty.style.padding = "8px 12px";
-      empty.style.color = "var(--text-muted)";
+      body.createDiv({ text: "(no changes)", cls: "agent-mcp-diff-empty" });
     }
   }
 }

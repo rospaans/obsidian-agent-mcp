@@ -13,11 +13,19 @@ export interface SelectionData {
   };
 }
 
+// The plugin is desktop-only, so vault.adapter is a FileSystemAdapter. Guard
+// with instanceof rather than casting, so it degrades to "" instead of throwing
+// if that assumption ever changes (e.g. a future mobile adapter).
+export function getVaultBasePath(app: App): string {
+  const adapter = app.vault.adapter;
+  return adapter instanceof FileSystemAdapter ? adapter.getBasePath() : "";
+}
+
 export function getSelectionData(app: App): SelectionData | null {
   const view = app.workspace.getActiveViewOfType(MarkdownView);
   if (!view?.file) return null;
   const editor = view.editor;
-  const basePath = (app.vault.adapter as FileSystemAdapter).getBasePath();
+  const basePath = getVaultBasePath(app);
   const cursor = editor.getCursor();
   const from = editor.getCursor("from");
   const to = editor.getCursor("to");
@@ -38,7 +46,7 @@ export function getSelectionData(app: App): SelectionData | null {
 
 export function createEditorTools(app: App, getLatestSelection: () => SelectionData | null): ToolDefinition[] {
   function basePath() {
-    return (app.vault.adapter as FileSystemAdapter).getBasePath();
+    return getVaultBasePath(app);
   }
 
   return [

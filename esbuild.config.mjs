@@ -13,9 +13,9 @@ if (existsSync(".env")) {
 const pluginDir = process.env.OBSIDIAN_PLUGIN_DIR;
 
 // ── Bundle src/main.ts → main.js ──────────────────────────────────────────────
-// The PTY bridge (bridge.py) and xterm's CSS are inlined as text, so the entire
-// plugin ships as a single main.js with no native binaries — installable through
-// the Obsidian community directory. A user-provided python3 runs the bridge.
+// The PTY bridge (bridge.py) is inlined as text, so the entire plugin ships as a
+// single main.js with no native binaries — installable through the Obsidian
+// community directory. A user-provided python3 runs the bridge.
 
 await esbuild.build({
   entryPoints: ["src/main.ts"],
@@ -25,8 +25,22 @@ await esbuild.build({
   platform: "node",
   external: ["obsidian"],
   loader: {
-    ".css": "text",
     ".py": "text",
+  },
+  minify: false,
+  logLevel: "info",
+}).catch(() => process.exit(1));
+
+// ── Bundle src/styles.css → styles.css ────────────────────────────────────────
+// Obsidian auto-loads styles.css from the plugin folder. esbuild inlines the
+// xterm @import so the shipped stylesheet is self-contained.
+
+await esbuild.build({
+  entryPoints: ["src/styles.css"],
+  bundle: true,
+  outfile: "styles.css",
+  loader: {
+    ".css": "css",
   },
   minify: false,
   logLevel: "info",
@@ -38,5 +52,6 @@ if (pluginDir) {
   mkdirSync(pluginDir, { recursive: true });
   copyFileSync("main.js", join(pluginDir, "main.js"));
   copyFileSync("manifest.json", join(pluginDir, "manifest.json"));
+  copyFileSync("styles.css", join(pluginDir, "styles.css"));
   console.log(`Deployed to ${pluginDir}`);
 }

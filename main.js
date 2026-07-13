@@ -10311,8 +10311,7 @@ var AgentMCPSettingsTab = class extends import_obsidian.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Agent MCP" });
-    containerEl.createEl("h3", { text: "Agent backend" });
+    new import_obsidian.Setting(containerEl).setName("Agent backend").setHeading();
     new import_obsidian.Setting(containerEl).setName("Backend").setDesc(
       'Which agent the terminal launches. "Claude Code" uses your normal claude setup. "Ollama" runs `ollama launch claude`, which points Claude Code at a local Ollama model \u2014 the IDE connection, MCP tools, and diff previews all work identically.'
     ).addDropdown(
@@ -10332,7 +10331,7 @@ var AgentMCPSettingsTab = class extends import_obsidian.PluginSettingTab {
         })
       );
     }
-    containerEl.createEl("h3", { text: "Terminal" });
+    new import_obsidian.Setting(containerEl).setName("Terminal").setHeading();
     new import_obsidian.Setting(containerEl).setName("Python path").setDesc(
       'Path to a Python 3 interpreter. The terminal uses it to run a small pseudo-terminal bridge (standard library only, no packages to install). Leave blank to use "python3" from your PATH. Required on macOS and Linux; Windows is not yet supported.'
     ).addText(
@@ -10394,11 +10393,15 @@ function wrap(data) {
 }
 
 // src/tools/editor.ts
+function getVaultBasePath(app) {
+  const adapter = app.vault.adapter;
+  return adapter instanceof import_obsidian2.FileSystemAdapter ? adapter.getBasePath() : "";
+}
 function getSelectionData(app) {
   const view = app.workspace.getActiveViewOfType(import_obsidian2.MarkdownView);
   if (!view?.file) return null;
   const editor = view.editor;
-  const basePath = app.vault.adapter.getBasePath();
+  const basePath = getVaultBasePath(app);
   const cursor = editor.getCursor();
   const from = editor.getCursor("from");
   const to = editor.getCursor("to");
@@ -10418,7 +10421,7 @@ function getSelectionData(app) {
 }
 function createEditorTools(app, getLatestSelection) {
   function basePath() {
-    return app.vault.adapter.getBasePath();
+    return getVaultBasePath(app);
   }
   return [
     {
@@ -10464,247 +10467,11 @@ function createEditorTools(app, getLatestSelection) {
 
 // src/terminal/view.ts
 var import_obsidian3 = require("obsidian");
-var import_xterm2 = __toESM(require_xterm());
+var import_xterm = __toESM(require_xterm());
 var import_addon_fit = __toESM(require_addon_fit());
 var import_addon_web_links = __toESM(require_addon_web_links());
 var import_addon_unicode11 = __toESM(require_addon_unicode11());
 var import_addon_canvas = __toESM(require_addon_canvas());
-
-// node_modules/@xterm/xterm/css/xterm.css
-var xterm_default = `/**
- * Copyright (c) 2014 The xterm.js authors. All rights reserved.
- * Copyright (c) 2012-2013, Christopher Jeffrey (MIT License)
- * https://github.com/chjj/term.js
- * @license MIT
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
- *
- * Originally forked from (with the author's permission):
- *   Fabrice Bellard's javascript vt100 for jslinux:
- *   http://bellard.org/jslinux/
- *   Copyright (c) 2011 Fabrice Bellard
- *   The original design remains. The terminal itself
- *   has been extended to include xterm CSI codes, among
- *   other features.
- */
-
-/**
- *  Default styles for xterm.js
- */
-
-.xterm {
-    cursor: text;
-    position: relative;
-    user-select: none;
-    -ms-user-select: none;
-    -webkit-user-select: none;
-}
-
-.xterm.focus,
-.xterm:focus {
-    outline: none;
-}
-
-.xterm .xterm-helpers {
-    position: absolute;
-    top: 0;
-    /**
-     * The z-index of the helpers must be higher than the canvases in order for
-     * IMEs to appear on top.
-     */
-    z-index: 5;
-}
-
-.xterm .xterm-helper-textarea {
-    padding: 0;
-    border: 0;
-    margin: 0;
-    /* Move textarea out of the screen to the far left, so that the cursor is not visible */
-    position: absolute;
-    opacity: 0;
-    left: -9999em;
-    top: 0;
-    width: 0;
-    height: 0;
-    z-index: -5;
-    /** Prevent wrapping so the IME appears against the textarea at the correct position */
-    white-space: nowrap;
-    overflow: hidden;
-    resize: none;
-}
-
-.xterm .composition-view {
-    /* TODO: Composition position got messed up somewhere */
-    background: #000;
-    color: #FFF;
-    display: none;
-    position: absolute;
-    white-space: nowrap;
-    z-index: 1;
-}
-
-.xterm .composition-view.active {
-    display: block;
-}
-
-.xterm .xterm-viewport {
-    /* On OS X this is required in order for the scroll bar to appear fully opaque */
-    background-color: #000;
-    overflow-y: scroll;
-    cursor: default;
-    position: absolute;
-    right: 0;
-    left: 0;
-    top: 0;
-    bottom: 0;
-}
-
-.xterm .xterm-screen {
-    position: relative;
-}
-
-.xterm .xterm-screen canvas {
-    position: absolute;
-    left: 0;
-    top: 0;
-}
-
-.xterm .xterm-scroll-area {
-    visibility: hidden;
-}
-
-.xterm-char-measure-element {
-    display: inline-block;
-    visibility: hidden;
-    position: absolute;
-    top: 0;
-    left: -9999em;
-    line-height: normal;
-}
-
-.xterm.enable-mouse-events {
-    /* When mouse events are enabled (eg. tmux), revert to the standard pointer cursor */
-    cursor: default;
-}
-
-.xterm.xterm-cursor-pointer,
-.xterm .xterm-cursor-pointer {
-    cursor: pointer;
-}
-
-.xterm.column-select.focus {
-    /* Column selection mode */
-    cursor: crosshair;
-}
-
-.xterm .xterm-accessibility:not(.debug),
-.xterm .xterm-message {
-    position: absolute;
-    left: 0;
-    top: 0;
-    bottom: 0;
-    right: 0;
-    z-index: 10;
-    color: transparent;
-    pointer-events: none;
-}
-
-.xterm .xterm-accessibility-tree:not(.debug) *::selection {
-  color: transparent;
-}
-
-.xterm .xterm-accessibility-tree {
-  user-select: text;
-  white-space: pre;
-}
-
-.xterm .live-region {
-    position: absolute;
-    left: -9999px;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-}
-
-.xterm-dim {
-    /* Dim should not apply to background, so the opacity of the foreground color is applied
-     * explicitly in the generated class and reset to 1 here */
-    opacity: 1 !important;
-}
-
-.xterm-underline-1 { text-decoration: underline; }
-.xterm-underline-2 { text-decoration: double underline; }
-.xterm-underline-3 { text-decoration: wavy underline; }
-.xterm-underline-4 { text-decoration: dotted underline; }
-.xterm-underline-5 { text-decoration: dashed underline; }
-
-.xterm-overline {
-    text-decoration: overline;
-}
-
-.xterm-overline.xterm-underline-1 { text-decoration: overline underline; }
-.xterm-overline.xterm-underline-2 { text-decoration: overline double underline; }
-.xterm-overline.xterm-underline-3 { text-decoration: overline wavy underline; }
-.xterm-overline.xterm-underline-4 { text-decoration: overline dotted underline; }
-.xterm-overline.xterm-underline-5 { text-decoration: overline dashed underline; }
-
-.xterm-strikethrough {
-    text-decoration: line-through;
-}
-
-.xterm-screen .xterm-decoration-container .xterm-decoration {
-	z-index: 6;
-	position: absolute;
-}
-
-.xterm-screen .xterm-decoration-container .xterm-decoration.xterm-decoration-top-layer {
-	z-index: 7;
-}
-
-.xterm-decoration-overview-ruler {
-    z-index: 8;
-    position: absolute;
-    top: 0;
-    right: 0;
-    pointer-events: none;
-}
-
-.xterm-decoration-top {
-    z-index: 2;
-    position: relative;
-}
-`;
-
-// src/terminal/styles.ts
-var STYLE_EL_ID = "agent-mcp-terminal-styles";
-function ensureTerminalStyles() {
-  if (document.getElementById(STYLE_EL_ID)) return;
-  const style = document.createElement("style");
-  style.id = STYLE_EL_ID;
-  style.textContent = xterm_default + `
-.agent-mcp-terminal-host { width: 100%; height: 100%; }
-.agent-mcp-terminal-host .xterm-viewport { overflow-y: auto; }
-`;
-  document.head.appendChild(style);
-}
-
-// src/terminal/view.ts
 var AGENT_TERMINAL_VIEW_TYPE = "agent-terminal";
 var RESIZE_DEBOUNCE_MS = 60;
 var AgentTerminalView = class extends import_obsidian3.ItemView {
@@ -10723,7 +10490,7 @@ var AgentTerminalView = class extends import_obsidian3.ItemView {
     return AGENT_TERMINAL_VIEW_TYPE;
   }
   getDisplayText() {
-    return "Agent Terminal";
+    return "Agent terminal";
   }
   getIcon() {
     return "terminal";
@@ -10732,18 +10499,12 @@ var AgentTerminalView = class extends import_obsidian3.ItemView {
     this.term?.focus();
   }
   async onOpen() {
-    ensureTerminalStyles();
     const container = this.contentEl;
     container.empty();
     container.addClass("agent-mcp-terminal-container");
-    container.style.padding = "0";
-    container.style.height = "100%";
-    container.style.background = "var(--background-primary)";
     const host = container.createDiv({ cls: "agent-mcp-terminal-host" });
-    host.style.width = "100%";
-    host.style.height = "100%";
     const cfg = this.configProvider();
-    const term = new import_xterm2.Terminal({
+    const term = new import_xterm.Terminal({
       fontFamily: cfg.fontFamily || 'Menlo, Consolas, "Liberation Mono", monospace',
       fontSize: cfg.fontSize || 13,
       cursorBlink: true,
@@ -10774,9 +10535,9 @@ var AgentTerminalView = class extends import_obsidian3.ItemView {
     } catch (err) {
       term.writeln("\x1B[31mFailed to start shell:\x1B[0m " + String(err));
       term.writeln("");
-      term.writeln("The native PTY module could not be loaded. If you built from source,");
-      term.writeln("run `npm install` and `npm run build` again. If you installed the release,");
-      term.writeln("make sure the `node-pty/` folder is present next to main.js.");
+      term.writeln("The Python PTY bridge could not be started. Make sure a Python 3");
+      term.writeln("interpreter is available and set its path in the plugin settings");
+      term.writeln("(Settings \u2192 Agent MCP \u2192 Python path \u2192 Check).");
       return;
     }
     this.wirePtyToTerm(this.pty, term);
@@ -10788,14 +10549,14 @@ var AgentTerminalView = class extends import_obsidian3.ItemView {
     term.focus();
   }
   scheduleInitialFit(host) {
-    requestAnimationFrame(() => requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
       if (host.clientWidth === 0 || host.clientHeight === 0) return;
       this.applyResize();
     }));
   }
   scheduleResize() {
-    if (this.resizeTimer) clearTimeout(this.resizeTimer);
-    this.resizeTimer = setTimeout(() => {
+    if (this.resizeTimer) window.clearTimeout(this.resizeTimer);
+    this.resizeTimer = window.setTimeout(() => {
       this.resizeTimer = null;
       this.applyResize();
     }, RESIZE_DEBOUNCE_MS);
@@ -10840,7 +10601,7 @@ var AgentTerminalView = class extends import_obsidian3.ItemView {
   }
   async onClose() {
     if (this.resizeTimer) {
-      clearTimeout(this.resizeTimer);
+      window.clearTimeout(this.resizeTimer);
       this.resizeTimer = null;
     }
     for (const d of this.disposers) {
@@ -10939,61 +10700,22 @@ var AgentDiffView = class extends import_obsidian4.ItemView {
     const root = this.contentEl;
     root.empty();
     root.addClass("agent-mcp-diff");
-    root.style.display = "flex";
-    root.style.flexDirection = "column";
-    root.style.height = "100%";
-    root.style.padding = "0";
     const rows = diffLines(this.payload.oldContent, this.payload.newContent);
     const added = rows.filter((r) => r.type === "add").length;
     const removed = rows.filter((r) => r.type === "del").length;
-    const header = root.createDiv();
-    header.style.display = "flex";
-    header.style.alignItems = "center";
-    header.style.gap = "8px";
-    header.style.padding = "8px 12px";
-    header.style.borderBottom = "1px solid var(--background-modifier-border)";
-    header.style.flex = "0 0 auto";
-    const title = header.createSpan({ text: this.payload.fileName });
-    title.style.fontWeight = "600";
-    title.style.overflow = "hidden";
-    title.style.textOverflow = "ellipsis";
-    title.style.whiteSpace = "nowrap";
-    const stat = header.createSpan({ text: `+${added} -${removed}` });
-    stat.style.fontSize = "12px";
-    stat.style.color = "var(--text-muted)";
-    stat.style.marginRight = "auto";
-    const hint = header.createSpan({ text: "Approve in the terminal \u203A" });
-    hint.style.fontSize = "12px";
-    hint.style.color = "var(--text-accent)";
-    const body = root.createDiv();
-    body.style.flex = "1 1 auto";
-    body.style.overflow = "auto";
-    body.style.fontFamily = "var(--font-monospace, monospace)";
-    body.style.fontSize = "var(--font-text-size, 13px)";
-    body.style.lineHeight = "1.5";
-    body.style.padding = "4px 0";
+    const header = root.createDiv({ cls: "agent-mcp-diff-header" });
+    header.createSpan({ text: this.payload.fileName, cls: "agent-mcp-diff-title" });
+    header.createSpan({ text: `+${added} -${removed}`, cls: "agent-mcp-diff-stat" });
+    header.createSpan({ text: "Approve in the terminal \u203A", cls: "agent-mcp-diff-hint" });
+    const body = root.createDiv({ cls: "agent-mcp-diff-body" });
     for (const r of rows) {
-      const line = body.createDiv();
-      line.style.whiteSpace = "pre-wrap";
-      line.style.wordBreak = "break-word";
-      line.style.padding = "0 12px 0 8px";
-      line.style.borderLeft = "3px solid transparent";
+      const variant = r.type === "add" ? "is-add" : r.type === "del" ? "is-del" : "is-ctx";
+      const line = body.createDiv({ cls: `agent-mcp-diff-line ${variant}` });
       const prefix = r.type === "add" ? "+ " : r.type === "del" ? "- " : "  ";
-      if (r.type === "add") {
-        line.style.background = "rgba(46, 160, 67, 0.15)";
-        line.style.borderLeftColor = "rgba(46, 160, 67, 0.8)";
-      } else if (r.type === "del") {
-        line.style.background = "rgba(248, 81, 73, 0.15)";
-        line.style.borderLeftColor = "rgba(248, 81, 73, 0.8)";
-      } else {
-        line.style.color = "var(--text-muted)";
-      }
       line.setText(prefix + r.text);
     }
     if (rows.length === 0) {
-      const empty = body.createDiv({ text: "(no changes)" });
-      empty.style.padding = "8px 12px";
-      empty.style.color = "var(--text-muted)";
+      body.createDiv({ text: "(no changes)", cls: "agent-mcp-diff-empty" });
     }
   }
 };
@@ -11030,7 +10752,7 @@ function cleanStaleLockFiles() {
       try {
         const data = JSON.parse((0, import_node_fs2.readFileSync)(p, "utf-8"));
         if (data.ideName !== "Obsidian") continue;
-        process.kill(data.pid, 0);
+        if (typeof data.pid === "number") process.kill(data.pid, 0);
       } catch {
         try {
           (0, import_node_fs2.unlinkSync)(p);
@@ -11090,6 +10812,9 @@ function makeFrame(opcode, data) {
   }
   return Buffer.concat([header, payload]);
 }
+function asString(v) {
+  return typeof v === "string" ? v : "";
+}
 var ObsidianAgentMCP = class extends import_obsidian5.Plugin {
   clients = /* @__PURE__ */ new Set();
   server = null;
@@ -11118,7 +10843,7 @@ var ObsidianAgentMCP = class extends import_obsidian5.Plugin {
     this.port = await this.startServer();
     const vaultPath = this.basePath();
     createLockFile(this.port, process.pid, vaultPath, this.authToken);
-    this.lockRefreshInterval = setInterval(() => {
+    this.lockRefreshInterval = window.setInterval(() => {
       if ((0, import_node_fs2.existsSync)((0, import_node_path2.join)(LOCK_DIR, `${this.port}.lock`))) return;
       try {
         createLockFile(this.port, process.pid, vaultPath, this.authToken);
@@ -11147,24 +10872,21 @@ var ObsidianAgentMCP = class extends import_obsidian5.Plugin {
     this.registerView(AGENT_DIFF_VIEW_TYPE, (leaf) => new AgentDiffView(leaf));
     this.addCommand({
       id: "open-agent-terminal",
-      name: "Open Agent Terminal",
-      callback: () => this.openTerminalView()
+      name: "Open agent terminal",
+      callback: () => void this.openTerminalView()
     });
-    this.addRibbonIcon("terminal", "Open Agent Terminal", () => this.openTerminalView());
+    this.addRibbonIcon("terminal", "Open agent terminal", () => void this.openTerminalView());
     this.startMcpHttpServer();
-    console.log(`[agent-mcp] WebSocket IDE server on 127.0.0.1:${this.port}`);
   }
   onunload() {
-    if (this.broadcastTimer) clearTimeout(this.broadcastTimer);
-    if (this.pingInterval) clearInterval(this.pingInterval);
-    if (this.lockRefreshInterval) clearInterval(this.lockRefreshInterval);
+    if (this.broadcastTimer) window.clearTimeout(this.broadcastTimer);
+    if (this.pingInterval) window.clearInterval(this.pingInterval);
+    if (this.lockRefreshInterval) window.clearInterval(this.lockRefreshInterval);
     for (const c of this.clients) c.socket.destroy();
     this.clients.clear();
     this.server?.close();
     this.mcpServer?.close();
     if (this.port) removeLockFile(this.port);
-    this.app.workspace.detachLeavesOfType(AGENT_TERMINAL_VIEW_TYPE);
-    this.app.workspace.detachLeavesOfType(AGENT_DIFF_VIEW_TYPE);
   }
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
@@ -11173,11 +10895,11 @@ var ObsidianAgentMCP = class extends import_obsidian5.Plugin {
     await this.saveData(this.settings);
   }
   basePath() {
-    return this.app.vault.adapter.getBasePath();
+    return getVaultBasePath(this.app);
   }
   // ── Terminal ───────────────────────────────────────────────────────────────
   pluginDir() {
-    return (0, import_node_path2.join)(this.basePath(), ".obsidian", "plugins", this.manifest.id);
+    return (0, import_node_path2.join)(this.basePath(), this.app.vault.configDir, "plugins", this.manifest.id);
   }
   getTerminalConfig() {
     const t = this.settings.terminal;
@@ -11206,13 +10928,13 @@ var ObsidianAgentMCP = class extends import_obsidian5.Plugin {
   async openTerminalView() {
     const existing = this.app.workspace.getLeavesOfType(AGENT_TERMINAL_VIEW_TYPE);
     if (existing.length > 0) {
-      this.app.workspace.revealLeaf(existing[0]);
+      void this.app.workspace.revealLeaf(existing[0]);
       return;
     }
     const leaf = this.app.workspace.getRightLeaf(false);
     if (!leaf) return;
     await leaf.setViewState({ type: AGENT_TERMINAL_VIEW_TYPE, active: true });
-    this.app.workspace.revealLeaf(leaf);
+    void this.app.workspace.revealLeaf(leaf);
   }
   // ── Tool registry ──────────────────────────────────────────────────────────
   getActiveTools() {
@@ -11220,8 +10942,8 @@ var ObsidianAgentMCP = class extends import_obsidian5.Plugin {
   }
   // ── Broadcasting ───────────────────────────────────────────────────────────
   scheduleBroadcast() {
-    if (this.broadcastTimer) clearTimeout(this.broadcastTimer);
-    this.broadcastTimer = setTimeout(() => {
+    if (this.broadcastTimer) window.clearTimeout(this.broadcastTimer);
+    this.broadcastTimer = window.setTimeout(() => {
       this.broadcastTimer = null;
       this.doBroadcast();
     }, 100);
@@ -11268,7 +10990,7 @@ data: ${JSON.stringify(msg)}
       case "openDiff":
         return this.openDiff(args ?? {});
       case "close_tab": {
-        const tab = String(args?.tab_name ?? "");
+        const tab = asString(args?.tab_name);
         const resolver = this.pendingDiffResolvers.get(tab);
         if (resolver) {
           this.pendingDiffResolvers.delete(tab);
@@ -11297,9 +11019,9 @@ data: ${JSON.stringify(msg)}
     return absPath.startsWith(base + "/") ? absPath.slice(base.length + 1) : absPath;
   }
   async openDiff(args) {
-    const filePath = String(args.new_file_path ?? args.old_file_path ?? "");
-    const newContent = String(args.new_file_contents ?? "");
-    const tabName = String(args.tab_name ?? filePath);
+    const filePath = asString(args.new_file_path) || asString(args.old_file_path);
+    const newContent = asString(args.new_file_contents);
+    const tabName = asString(args.tab_name) || filePath;
     const rel = this.toRelativePath(filePath);
     const fileName = rel.split("/").pop() || rel;
     const existing = this.app.vault.getAbstractFileByPath(rel);
@@ -11352,7 +11074,7 @@ data: ${JSON.stringify(msg)}
     const leaves = this.app.workspace.getLeavesOfType(AGENT_TERMINAL_VIEW_TYPE);
     if (leaves.length === 0) return;
     const leaf = leaves[0];
-    this.app.workspace.revealLeaf(leaf);
+    void this.app.workspace.revealLeaf(leaf);
     const view = leaf.view;
     if (view instanceof AgentTerminalView) view.focusTerminal();
   }
@@ -11377,7 +11099,7 @@ data: ${JSON.stringify(msg)}
           result: {
             protocolVersion: msg.params?.protocolVersion || "2025-03-26",
             capabilities: { tools: {} },
-            serverInfo: { name: "obsidian-agent-mcp", version: this.manifest.version }
+            serverInfo: { name: "agent-mcp", version: this.manifest.version }
           }
         };
       case "tools/list":
@@ -11421,7 +11143,8 @@ data: ${JSON.stringify(msg)}
       socket.destroy();
       return;
     }
-    const protocol = headers["sec-websocket-protocol"];
+    const protocolHeader = headers["sec-websocket-protocol"];
+    const protocol = Array.isArray(protocolHeader) ? protocolHeader[0] : protocolHeader;
     socket.write(
       `HTTP/1.1 101 Switching Protocols\r
 Upgrade: websocket\r
@@ -11472,7 +11195,7 @@ Sec-WebSocket-Accept: ${computeAcceptKey(wsKey)}\r
         break;
       } else if (frame.opcode === OPCODE.TEXT) {
         const payload = frame.payload;
-        this.handleWsText(client, payload);
+        void this.handleWsText(client, payload);
       }
     }
   }
@@ -11490,7 +11213,7 @@ Sec-WebSocket-Accept: ${computeAcceptKey(wsKey)}\r
       this.server.on("error", reject);
       this.server.listen(0, "127.0.0.1", () => {
         const addr = this.server.address();
-        this.pingInterval = setInterval(() => {
+        this.pingInterval = window.setInterval(() => {
           for (const c of this.clients) {
             if (!c.alive) {
               c.socket.destroy();
@@ -11507,7 +11230,7 @@ Sec-WebSocket-Accept: ${computeAcceptKey(wsKey)}\r
   }
   // ── MCP HTTP/SSE server ────────────────────────────────────────────────────
   isLocalhostRequest(req, res) {
-    const host = Array.isArray(req.headers["host"]) ? req.headers["host"][0] : req.headers["host"];
+    const host = req.headers.host;
     if (!host || !(/* @__PURE__ */ new Set([`127.0.0.1:${MCP_HTTP_PORT}`, `localhost:${MCP_HTTP_PORT}`])).has(host)) {
       res.writeHead(403);
       res.end();
@@ -11570,7 +11293,7 @@ Sec-WebSocket-Accept: ${computeAcceptKey(wsKey)}\r
       if (url.pathname === "/mcp" && req.method === "POST") {
         let body = "";
         req.on("data", (chunk) => body += chunk.toString());
-        req.on("end", async () => {
+        req.on("end", () => void (async () => {
           try {
             const result = await this.handleStreamableHttpPayload(this.parseJsonRpcBody(body));
             if (result.status === 200) {
@@ -11591,7 +11314,7 @@ Sec-WebSocket-Accept: ${computeAcceptKey(wsKey)}\r
             });
             res.end();
           }
-        });
+        })());
         return;
       }
       if (url.pathname === "/sse" && req.method === "GET") {
@@ -11614,13 +11337,13 @@ data: http://127.0.0.1:${MCP_HTTP_PORT}/message?sessionId=${sessionId}
         const sseRes = this.mcpSessions.get(url.searchParams.get("sessionId") ?? "");
         let body = "";
         req.on("data", (chunk) => body += chunk.toString());
-        req.on("end", async () => {
+        req.on("end", () => void (async () => {
           try {
             const msg = JSON.parse(body);
             res.writeHead(202, { "MCP-Protocol-Version": protocolVersion });
             res.end();
             if (msg.id != null && sseRes && !sseRes.writableEnded) {
-              const response = await this.handleRpc(msg);
+              const response = await this.handleRpc({ jsonrpc: "2.0", id: msg.id, method: msg.method ?? "", params: msg.params });
               sseRes.write(`event: message
 data: ${JSON.stringify(response)}
 
@@ -11630,7 +11353,7 @@ data: ${JSON.stringify(response)}
             res.writeHead(400, { "MCP-Protocol-Version": protocolVersion });
             res.end();
           }
-        });
+        })());
         return;
       }
       res.writeHead(404, { "MCP-Protocol-Version": protocolVersion });
@@ -11639,10 +11362,6 @@ data: ${JSON.stringify(response)}
     this.mcpServer.on("error", (err) => {
       if (err.code !== "EADDRINUSE") console.error("[agent-mcp] MCP HTTP error:", err);
     });
-    this.mcpServer.listen(
-      MCP_HTTP_PORT,
-      "127.0.0.1",
-      () => console.log(`[agent-mcp] MCP HTTP server on 127.0.0.1:${MCP_HTTP_PORT}`)
-    );
+    this.mcpServer.listen(MCP_HTTP_PORT, "127.0.0.1");
   }
 };
