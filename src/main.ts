@@ -7,7 +7,7 @@ import { writeFileSync, renameSync, unlinkSync, readdirSync, readFileSync, mkdir
 import { join } from "node:path";
 import { homedir } from "node:os";
 
-import { DEFAULT_SETTINGS, AgentMCPSettingsTab, type PluginSettings, type TerminalSettings } from "./settings";
+import { DEFAULT_SETTINGS, AgentMCPSettingsTab, type PluginSettings, type AgentBackend } from "./settings";
 import { createEditorTools, getSelectionData, getVaultBasePath } from "./tools/editor";
 import type { ToolDefinition } from "./tools/types";
 import { AgentTerminalView, AGENT_TERMINAL_VIEW_TYPE, type TerminalConfig } from "./terminal/view";
@@ -174,7 +174,7 @@ export default class ObsidianAgentMCP extends Plugin {
       callback: () => void this.openTerminalView(),
     });
 
-    this.addRibbonIcon("terminal", "Open agent terminal", () => void this.openTerminalView());
+    this.addRibbonIcon("bot", "Open agent terminal", () => void this.openTerminalView());
 
     this.startMcpHttpServer();
   }
@@ -191,7 +191,15 @@ export default class ObsidianAgentMCP extends Plugin {
   }
 
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, (await this.loadData()) as Partial<PluginSettings>);
+    const data = ((await this.loadData()) ?? {}) as Partial<PluginSettings>;
+    // Deep-merge the nested `terminal` object: a shallow Object.assign would let a
+    // saved `terminal` (written before newer keys like `ollamaModel` existed)
+    // replace the whole default, leaving those keys undefined and crashing later.
+    this.settings = {
+      ...DEFAULT_SETTINGS,
+      ...data,
+      terminal: { ...DEFAULT_SETTINGS.terminal, ...(data.terminal ?? {}) },
+    };
   }
 
   async saveSettings() {
@@ -219,21 +227,34 @@ export default class ObsidianAgentMCP extends Plugin {
       cwd: t.cwd === "home" ? homedir() : this.basePath(),
       shell: t.shell.trim() || undefined,
       shellArgs,
-      startupCommand: this.resolveStartupCommand(t),
       fontSize: t.fontSize,
+      backend: t.backend,
+      resolveStartupCommand: backend => this.resolveStartupCommand(backend),
+      onBackendChange: backend => this.persistBackend(backend),
     };
   }
 
-  // Claude Code backend uses the user's free-text startup command. The Ollama
-  // backend launches Claude Code via `ollama launch claude`, which points it at
-  // a local Ollama model — everything downstream (IDE connection, MCP tools,
-  // diff previews) behaves identically because it is still Claude Code.
-  private resolveStartupCommand(t: TerminalSettings): string {
-    if (t.backend === "ollama") {
+  // The agent command that auto-runs when a terminal session starts, so the user
+  // always lands in the agent rather than a bare shell. The Claude Code agent
+  // runs `claude` (or the user's override). The Ollama agent launches Claude Code
+  // via `ollama launch claude`, pointing it at a local model — everything
+  // downstream (IDE connection, MCP tools, diff previews) behaves identically
+  // because it is still Claude Code.
+  private resolveStartupCommand(backend: AgentBackend): string {
+    const t = this.settings.terminal;
+    if (backend === "ollama") {
       const model = t.ollamaModel.trim();
       return model ? `ollama launch claude --model ${model}` : "ollama launch claude";
     }
-    return t.startupCommand;
+    return t.startupCommand.trim() || "claude";
+  }
+
+  // The in-terminal agent switcher persists its selection here so it becomes the
+  // default the next time a terminal is opened.
+  private persistBackend(backend: AgentBackend): void {
+    if (this.settings.terminal.backend === backend) return;
+    this.settings.terminal.backend = backend;
+    void this.saveSettings();
   }
 
   private async openTerminalView(): Promise<void> {

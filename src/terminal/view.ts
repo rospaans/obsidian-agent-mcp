@@ -5,7 +5,8 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { CanvasAddon } from "@xterm/addon-canvas";
 
-import { defaultShell, spawnShell, type IPty } from "./pty";
+import { agentShell, defaultShell, spawnShell, type IPty } from "./pty";
+import { AGENT_BACKENDS, type AgentBackend } from "../settings";
 
 export const AGENT_TERMINAL_VIEW_TYPE = "agent-terminal";
 
@@ -17,9 +18,14 @@ export interface TerminalConfig {
   cwd: string;
   shell?: string;
   shellArgs?: string[];
-  startupCommand?: string;
   fontFamily?: string;
   fontSize?: number;
+  /** Agent the terminal starts with. */
+  backend: AgentBackend;
+  /** Command auto-run to launch the given agent, so a bare shell is never shown. */
+  resolveStartupCommand: (backend: AgentBackend) => string;
+  /** Called when the user switches agents from the toolbar, to persist the choice. */
+  onBackendChange: (backend: AgentBackend) => void;
 }
 
 export class AgentTerminalView extends ItemView {
@@ -29,6 +35,10 @@ export class AgentTerminalView extends ItemView {
   private resizeObserver: ResizeObserver | null = null;
   private resizeTimer: number | null = null;
   private disposers: Array<{ dispose(): void }> = [];
+
+  private cfg: TerminalConfig | null = null;
+  private currentBackend: AgentBackend = "claude";
+  private host: HTMLElement | null = null;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -47,7 +57,7 @@ export class AgentTerminalView extends ItemView {
   }
 
   getIcon(): string {
-    return "terminal";
+    return "bot";
   }
 
   focusTerminal(): void {
@@ -59,9 +69,50 @@ export class AgentTerminalView extends ItemView {
     container.empty();
     container.addClass("agent-mcp-terminal-container");
 
-    const host = container.createDiv({ cls: "agent-mcp-terminal-host" });
+    this.cfg = this.configProvider();
+    this.currentBackend = this.cfg.backend;
 
-    const cfg = this.configProvider();
+    this.buildToolbar(container);
+    this.host = container.createDiv({ cls: "agent-mcp-terminal-host" });
+
+    this.startSession();
+  }
+
+  // Toolbar with the agent switcher. Switching restarts the session with the
+  // newly selected agent so the user always stays inside an agent interface.
+  private buildToolbar(container: HTMLElement): void {
+    const bar = container.createDiv({ cls: "agent-mcp-terminal-toolbar" });
+    bar.createSpan({ cls: "agent-mcp-terminal-toolbar-label", text: "Agent" });
+
+    const select = bar.createEl("select", {
+      cls: "dropdown agent-mcp-terminal-select",
+    });
+    for (const { id, label } of AGENT_BACKENDS) {
+      const opt = select.createEl("option", { value: id, text: label });
+      if (id === this.currentBackend) opt.selected = true;
+    }
+
+    this.registerDomEvent(select, "change", () => {
+      const next = select.value as AgentBackend;
+      if (next === this.currentBackend) return;
+      this.switchBackend(next);
+    });
+  }
+
+  private switchBackend(backend: AgentBackend): void {
+    this.currentBackend = backend;
+    this.cfg?.onBackendChange(backend);
+    this.stopSession();
+    this.startSession();
+  }
+
+  // Builds the terminal + PTY and auto-runs the agent command. Reused by
+  // onOpen and by switchBackend, so it starts from a clean host element.
+  private startSession(): void {
+    const cfg = this.cfg;
+    const host = this.host;
+    if (!cfg || !host) return;
+    host.empty();
 
     const term = new Terminal({
       fontFamily: cfg.fontFamily || "Menlo, Consolas, \"Liberation Mono\", monospace",
@@ -114,10 +165,6 @@ export class AgentTerminalView extends ItemView {
 
     this.wirePtyToTerm(this.pty, term);
 
-    if (cfg.startupCommand && cfg.startupCommand.trim().length > 0) {
-      this.pty.write(cfg.startupCommand + "\r");
-    }
-
     this.resizeObserver = new ResizeObserver(() => this.scheduleResize());
     this.resizeObserver.observe(host);
 
@@ -161,9 +208,12 @@ export class AgentTerminalView extends ItemView {
   }
 
   private startPty(cfg: TerminalConfig, cols: number, rows: number): IPty {
-    const { file, args } = cfg.shell
-      ? { file: cfg.shell, args: cfg.shellArgs ?? [] }
-      : defaultShell();
+    const command = cfg.resolveStartupCommand(this.currentBackend).trim();
+    // Launch straight into the agent (never a bare shell). If somehow no command
+    // resolves, fall back to an interactive login shell rather than nothing.
+    const { file, args } = command
+      ? agentShell(command, cfg.shell, cfg.shellArgs)
+      : (cfg.shell ? { file: cfg.shell, args: cfg.shellArgs ?? [] } : defaultShell());
     return spawnShell({
       pluginDir: cfg.pluginDir,
       pythonPath: cfg.pythonPath,
@@ -186,7 +236,9 @@ export class AgentTerminalView extends ItemView {
     );
   }
 
-  async onClose(): Promise<void> {
+  // Tears down the current terminal + PTY but leaves the toolbar and host in
+  // place, so a new session can be started on the same view (agent switch).
+  private stopSession(): void {
     if (this.resizeTimer) {
       window.clearTimeout(this.resizeTimer);
       this.resizeTimer = null;
@@ -202,6 +254,12 @@ export class AgentTerminalView extends ItemView {
     try { this.term?.dispose(); } catch { /* noop */ }
     this.term = null;
     this.fit = null;
+  }
+
+  async onClose(): Promise<void> {
+    this.stopSession();
+    this.host = null;
+    this.cfg = null;
   }
 }
 

@@ -10276,6 +10276,11 @@ function defaultShell() {
   const shell = process.env.SHELL || "/bin/bash";
   return { file: shell, args: ["-l"] };
 }
+function agentShell(command, customShell, customArgs) {
+  const file = customShell?.trim() || defaultShell().file;
+  const loginArgs = customArgs && customArgs.length ? customArgs : ["-i", "-l"];
+  return { file, args: [...loginArgs, "-c", `exec ${command}`] };
+}
 function checkPython(pythonPath) {
   const python = pythonPath?.trim() || "python3";
   const probe = "import sys, pty, termios, fcntl, struct, select; print(sys.version.split()[0])";
@@ -10291,6 +10296,10 @@ function checkPython(pythonPath) {
 }
 
 // src/settings.ts
+var AGENT_BACKENDS = [
+  { id: "claude", label: "Claude Code" },
+  { id: "ollama", label: "Ollama (local model)" }
+];
 var DEFAULT_SETTINGS = {
   terminal: {
     backend: "claude",
@@ -10312,15 +10321,16 @@ var AgentMCPSettingsTab = class extends import_obsidian.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     new import_obsidian.Setting(containerEl).setName("Agent backend").setHeading();
-    new import_obsidian.Setting(containerEl).setName("Backend").setDesc(
-      'Which agent the terminal launches. "Claude Code" uses your normal claude setup. "Ollama" runs `ollama launch claude`, which points Claude Code at a local Ollama model \u2014 the IDE connection, MCP tools, and diff previews all work identically.'
-    ).addDropdown(
-      (drop) => drop.addOption("claude", "Claude Code").addOption("ollama", "Ollama (local model)").setValue(this.plugin.settings.terminal.backend).onChange(async (value) => {
+    new import_obsidian.Setting(containerEl).setName("Default agent").setDesc(
+      'Which agent a new terminal launches with. You can also switch agents from the dropdown at the top of the terminal \u2014 switching there restarts the session and updates this default. "Ollama" runs `ollama launch claude`, which points Claude Code at a local Ollama model \u2014 the IDE connection, MCP tools, and diff previews all work identically.'
+    ).addDropdown((drop) => {
+      for (const { id, label } of AGENT_BACKENDS) drop.addOption(id, label);
+      drop.setValue(this.plugin.settings.terminal.backend).onChange(async (value) => {
         this.plugin.settings.terminal.backend = value;
         await this.plugin.saveSettings();
         this.display();
-      })
-    );
+      });
+    });
     if (this.plugin.settings.terminal.backend === "ollama") {
       new import_obsidian.Setting(containerEl).setName("Ollama model").setDesc(
         "Passed as `ollama launch claude --model <model>` (e.g. qwen3.5, glm-4.7-flash, kimi-k2.5:cloud). Leave blank to use Ollama's default. Requires a recent Ollama with the `launch` command and a model with a large (64k+) context window."
@@ -10362,7 +10372,7 @@ var AgentMCPSettingsTab = class extends import_obsidian.PluginSettingTab {
       })
     );
     new import_obsidian.Setting(containerEl).setName("Startup command").setDesc(
-      "Optional command automatically typed into the shell when a terminal is opened (e.g. `claude`). Used with the Claude Code backend; ignored when the Ollama backend is selected."
+      "Overrides the command the Claude Code agent launches with. Leave blank to run `claude`. Ignored when the Ollama agent is selected."
     ).addText(
       (text) => text.setPlaceholder("claude").setValue(this.plugin.settings.terminal.startupCommand).onChange(async (value) => {
         this.plugin.settings.terminal.startupCommand = value;
@@ -10486,6 +10496,9 @@ var AgentTerminalView = class extends import_obsidian3.ItemView {
   resizeObserver = null;
   resizeTimer = null;
   disposers = [];
+  cfg = null;
+  currentBackend = "claude";
+  host = null;
   getViewType() {
     return AGENT_TERMINAL_VIEW_TYPE;
   }
@@ -10493,7 +10506,7 @@ var AgentTerminalView = class extends import_obsidian3.ItemView {
     return "Agent terminal";
   }
   getIcon() {
-    return "terminal";
+    return "bot";
   }
   focusTerminal() {
     this.term?.focus();
@@ -10502,8 +10515,43 @@ var AgentTerminalView = class extends import_obsidian3.ItemView {
     const container = this.contentEl;
     container.empty();
     container.addClass("agent-mcp-terminal-container");
-    const host = container.createDiv({ cls: "agent-mcp-terminal-host" });
-    const cfg = this.configProvider();
+    this.cfg = this.configProvider();
+    this.currentBackend = this.cfg.backend;
+    this.buildToolbar(container);
+    this.host = container.createDiv({ cls: "agent-mcp-terminal-host" });
+    this.startSession();
+  }
+  // Toolbar with the agent switcher. Switching restarts the session with the
+  // newly selected agent so the user always stays inside an agent interface.
+  buildToolbar(container) {
+    const bar = container.createDiv({ cls: "agent-mcp-terminal-toolbar" });
+    bar.createSpan({ cls: "agent-mcp-terminal-toolbar-label", text: "Agent" });
+    const select = bar.createEl("select", {
+      cls: "dropdown agent-mcp-terminal-select"
+    });
+    for (const { id, label } of AGENT_BACKENDS) {
+      const opt = select.createEl("option", { value: id, text: label });
+      if (id === this.currentBackend) opt.selected = true;
+    }
+    this.registerDomEvent(select, "change", () => {
+      const next = select.value;
+      if (next === this.currentBackend) return;
+      this.switchBackend(next);
+    });
+  }
+  switchBackend(backend) {
+    this.currentBackend = backend;
+    this.cfg?.onBackendChange(backend);
+    this.stopSession();
+    this.startSession();
+  }
+  // Builds the terminal + PTY and auto-runs the agent command. Reused by
+  // onOpen and by switchBackend, so it starts from a clean host element.
+  startSession() {
+    const cfg = this.cfg;
+    const host = this.host;
+    if (!cfg || !host) return;
+    host.empty();
     const term = new import_xterm.Terminal({
       fontFamily: cfg.fontFamily || 'Menlo, Consolas, "Liberation Mono", monospace',
       fontSize: cfg.fontSize || 13,
@@ -10541,9 +10589,6 @@ var AgentTerminalView = class extends import_obsidian3.ItemView {
       return;
     }
     this.wirePtyToTerm(this.pty, term);
-    if (cfg.startupCommand && cfg.startupCommand.trim().length > 0) {
-      this.pty.write(cfg.startupCommand + "\r");
-    }
     this.resizeObserver = new ResizeObserver(() => this.scheduleResize());
     this.resizeObserver.observe(host);
     term.focus();
@@ -10578,7 +10623,8 @@ var AgentTerminalView = class extends import_obsidian3.ItemView {
     }
   }
   startPty(cfg, cols, rows) {
-    const { file, args } = cfg.shell ? { file: cfg.shell, args: cfg.shellArgs ?? [] } : defaultShell();
+    const command = cfg.resolveStartupCommand(this.currentBackend).trim();
+    const { file, args } = command ? agentShell(command, cfg.shell, cfg.shellArgs) : cfg.shell ? { file: cfg.shell, args: cfg.shellArgs ?? [] } : defaultShell();
     return spawnShell({
       pluginDir: cfg.pluginDir,
       pythonPath: cfg.pythonPath,
@@ -10599,7 +10645,9 @@ var AgentTerminalView = class extends import_obsidian3.ItemView {
       term.onData((data) => pty.write(data))
     );
   }
-  async onClose() {
+  // Tears down the current terminal + PTY but leaves the toolbar and host in
+  // place, so a new session can be started on the same view (agent switch).
+  stopSession() {
     if (this.resizeTimer) {
       window.clearTimeout(this.resizeTimer);
       this.resizeTimer = null;
@@ -10624,6 +10672,11 @@ var AgentTerminalView = class extends import_obsidian3.ItemView {
     }
     this.term = null;
     this.fit = null;
+  }
+  async onClose() {
+    this.stopSession();
+    this.host = null;
+    this.cfg = null;
   }
 };
 function readTheme() {
@@ -10875,7 +10928,7 @@ var ObsidianAgentMCP = class extends import_obsidian5.Plugin {
       name: "Open agent terminal",
       callback: () => void this.openTerminalView()
     });
-    this.addRibbonIcon("terminal", "Open agent terminal", () => void this.openTerminalView());
+    this.addRibbonIcon("bot", "Open agent terminal", () => void this.openTerminalView());
     this.startMcpHttpServer();
   }
   onunload() {
@@ -10889,7 +10942,12 @@ var ObsidianAgentMCP = class extends import_obsidian5.Plugin {
     if (this.port) removeLockFile(this.port);
   }
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const data = await this.loadData() ?? {};
+    this.settings = {
+      ...DEFAULT_SETTINGS,
+      ...data,
+      terminal: { ...DEFAULT_SETTINGS.terminal, ...data.terminal ?? {} }
+    };
   }
   async saveSettings() {
     await this.saveData(this.settings);
@@ -10910,20 +10968,32 @@ var ObsidianAgentMCP = class extends import_obsidian5.Plugin {
       cwd: t.cwd === "home" ? (0, import_node_os.homedir)() : this.basePath(),
       shell: t.shell.trim() || void 0,
       shellArgs,
-      startupCommand: this.resolveStartupCommand(t),
-      fontSize: t.fontSize
+      fontSize: t.fontSize,
+      backend: t.backend,
+      resolveStartupCommand: (backend) => this.resolveStartupCommand(backend),
+      onBackendChange: (backend) => this.persistBackend(backend)
     };
   }
-  // Claude Code backend uses the user's free-text startup command. The Ollama
-  // backend launches Claude Code via `ollama launch claude`, which points it at
-  // a local Ollama model — everything downstream (IDE connection, MCP tools,
-  // diff previews) behaves identically because it is still Claude Code.
-  resolveStartupCommand(t) {
-    if (t.backend === "ollama") {
+  // The agent command that auto-runs when a terminal session starts, so the user
+  // always lands in the agent rather than a bare shell. The Claude Code agent
+  // runs `claude` (or the user's override). The Ollama agent launches Claude Code
+  // via `ollama launch claude`, pointing it at a local model — everything
+  // downstream (IDE connection, MCP tools, diff previews) behaves identically
+  // because it is still Claude Code.
+  resolveStartupCommand(backend) {
+    const t = this.settings.terminal;
+    if (backend === "ollama") {
       const model = t.ollamaModel.trim();
       return model ? `ollama launch claude --model ${model}` : "ollama launch claude";
     }
-    return t.startupCommand;
+    return t.startupCommand.trim() || "claude";
+  }
+  // The in-terminal agent switcher persists its selection here so it becomes the
+  // default the next time a terminal is opened.
+  persistBackend(backend) {
+    if (this.settings.terminal.backend === backend) return;
+    this.settings.terminal.backend = backend;
+    void this.saveSettings();
   }
   async openTerminalView() {
     const existing = this.app.workspace.getLeavesOfType(AGENT_TERMINAL_VIEW_TYPE);

@@ -123,6 +123,25 @@ export function defaultShell(): { file: string; args: string[] } {
   return { file: shell, args: ["-l"] };
 }
 
+// Builds a shell invocation that immediately *becomes* the agent instead of
+// dropping the user at a prompt: `zsh -i -l -c "exec <command>"`. `exec` replaces
+// the shell with the agent process — so no shell prompt or typed command is ever
+// shown, and the agent owns the pty's controlling TTY (it sees a real terminal).
+//
+// `-i -l` (interactive login) is deliberate: a plain `-l -c` is non-interactive,
+// so it sources .zprofile but NOT .zshrc — and tools like `claude` are commonly
+// added to PATH in .zshrc (~/.local/bin), so a non-interactive shell can't find
+// them. Interactive login sources both, matching how a real terminal resolves it.
+export function agentShell(
+  command: string,
+  customShell?: string,
+  customArgs?: string[],
+): { file: string; args: string[] } {
+  const file = customShell?.trim() || defaultShell().file;
+  const loginArgs = customArgs && customArgs.length ? customArgs : ["-i", "-l"];
+  return { file, args: [...loginArgs, "-c", `exec ${command}`] };
+}
+
 // Validates that the configured Python can run the bridge: it must exist and
 // expose the stdlib pty modules (all present on macOS/Linux; absent on Windows,
 // which needs a different backend). Used by the settings "Check" button.

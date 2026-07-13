@@ -2,8 +2,17 @@ import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type ObsidianAgentMCP from "./main";
 import { checkPython } from "./terminal/pty";
 
+// Agents the terminal can launch. Adding an entry here surfaces it in both the
+// settings dropdown and the in-terminal toolbar switcher.
+export type AgentBackend = "claude" | "ollama";
+
+export const AGENT_BACKENDS: ReadonlyArray<{ id: AgentBackend; label: string }> = [
+  { id: "claude", label: "Claude Code" },
+  { id: "ollama", label: "Ollama (local model)" },
+];
+
 export interface TerminalSettings {
-  backend: "claude" | "ollama";
+  backend: AgentBackend;
   ollamaModel: string;
   pythonPath: string;
   shell: string;
@@ -42,23 +51,24 @@ export class AgentMCPSettingsTab extends PluginSettingTab {
     new Setting(containerEl).setName("Agent backend").setHeading();
 
     new Setting(containerEl)
-      .setName("Backend")
+      .setName("Default agent")
       .setDesc(
-        "Which agent the terminal launches. \"Claude Code\" uses your normal claude setup. " +
-        "\"Ollama\" runs `ollama launch claude`, which points Claude Code at a local Ollama " +
-        "model — the IDE connection, MCP tools, and diff previews all work identically.",
+        "Which agent a new terminal launches with. You can also switch agents from the " +
+        "dropdown at the top of the terminal — switching there restarts the session and " +
+        "updates this default. \"Ollama\" runs `ollama launch claude`, which points Claude " +
+        "Code at a local Ollama model — the IDE connection, MCP tools, and diff previews all " +
+        "work identically.",
       )
-      .addDropdown(drop =>
+      .addDropdown(drop => {
+        for (const { id, label } of AGENT_BACKENDS) drop.addOption(id, label);
         drop
-          .addOption("claude", "Claude Code")
-          .addOption("ollama", "Ollama (local model)")
           .setValue(this.plugin.settings.terminal.backend)
           .onChange(async value => {
-            this.plugin.settings.terminal.backend = value as "claude" | "ollama";
+            this.plugin.settings.terminal.backend = value as AgentBackend;
             await this.plugin.saveSettings();
             this.display();
-          }),
-      );
+          });
+      });
 
     if (this.plugin.settings.terminal.backend === "ollama") {
       new Setting(containerEl)
@@ -139,8 +149,8 @@ export class AgentMCPSettingsTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Startup command")
       .setDesc(
-        "Optional command automatically typed into the shell when a terminal is opened (e.g. `claude`). " +
-        "Used with the Claude Code backend; ignored when the Ollama backend is selected.",
+        "Overrides the command the Claude Code agent launches with. Leave blank to run `claude`. " +
+        "Ignored when the Ollama agent is selected.",
       )
       .addText(text =>
         text
