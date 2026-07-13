@@ -51,8 +51,8 @@ When Claude Code is connected as an IDE, it routes file edits through the IDE in
 
 ### Option A: Manual install (no build required)
 
-1. Download `main.js` and `manifest.json` from the [latest release](../../releases/latest).
-2. Create `.obsidian/plugins/obsidian-agent-mcp/` inside your vault and place both files there.
+1. Download `main.js`, `manifest.json`, and `styles.css` from the [latest release](../../releases/latest).
+2. Create `.obsidian/plugins/agent-mcp/` inside your vault and place all three files there.
 3. Go to **Obsidian → Settings → Community plugins** → refresh → toggle **Agent MCP** on.
 
 ### Option B: Build from source
@@ -97,7 +97,7 @@ Register both channels once, then you're done forever.
 
 ```bash
 # (1) Register our MCP server so Claude can call our tools
-claude mcp add --transport http obsidian-agent-mcp http://127.0.0.1:27183/mcp
+claude mcp add --transport http agent-mcp http://127.0.0.1:27183/mcp
 ```
 
 The IDE connection is automatic — nothing to register. Claude Code scans `~/.claude/ide/` on startup and discovers the lock file the plugin wrote on launch.
@@ -107,7 +107,7 @@ Then:
 1. Open a terminal inside Obsidian (ribbon icon or command palette) — or use any external terminal with your vault as cwd.
 2. Run `claude`.
 3. Claude prompts you to connect to the discovered Obsidian IDE — accept once.
-4. Inside Claude, `/mcp` should list `obsidian-agent-mcp` as connected.
+4. Inside Claude, `/mcp` should list `agent-mcp` as connected.
 5. Ask something like *"What file am I in?"* → Claude will call `getLatestSelection`.
 
 Use the command palette command **"Send to Claude"** in Obsidian to explicitly push your current selection as a context mention.
@@ -119,7 +119,7 @@ When Claude edits a note, a read-only diff preview opens in Obsidian and focus r
 Codex only needs the MCP server registration:
 
 ```bash
-codex mcp add obsidian-agent-mcp --url http://127.0.0.1:27183/mcp
+codex mcp add agent-mcp --url http://127.0.0.1:27183/mcp
 ```
 
 Start `codex`, run `/mcp` to confirm the connection, then ask anything that benefits from vault context.
@@ -136,7 +136,7 @@ You can run the **exact same Claude Code experience** against a local model with
 4. As with Claude Code, register the MCP server once so the model can call our tools:
 
    ```bash
-   claude mcp add --transport http obsidian-agent-mcp http://127.0.0.1:27183/mcp
+   claude mcp add --transport http agent-mcp http://127.0.0.1:27183/mcp
    ```
 
 The IDE connection is still automatic — Claude Code discovers Obsidian via the lock file exactly as before.
@@ -199,6 +199,37 @@ private getActiveTools(): ToolDefinition[] {
 Both the WebSocket and HTTP/SSE transports pick it up automatically. No changes to server or routing code. (If you want it toggleable, add a setting in `src/settings.ts` and gate the `push` on it.)
 
 ---
+
+## Data, privacy & permissions
+
+In the interest of transparency (and to meet [Obsidian's developer policies](https://docs.obsidian.md/Developer+policies)), here is exactly what this plugin does with your data, your network, and your machine.
+
+### No telemetry, no account, no payment
+This plugin collects **no telemetry or analytics of any kind**, sends nothing about you or your vault to its author, and has no server-side component. It is free and requires no account or sign-up to use. (The coding-agent CLIs you drive with it may require their own account or API key — see *Network use* below.)
+
+### Files it accesses outside your vault
+Most of the plugin's work stays inside your vault, but it touches a few things outside it, by necessity:
+
+- **`~/.claude/ide/` (lock file).** The plugin writes, refreshes, and removes a small lock file here (e.g. `~/.claude/ide/<port>.lock`). It contains the local server port, your vault path, the name `"Obsidian"`, and a random per-session token. This is the standard mechanism Claude Code uses to discover editors as "IDEs" — it is how Claude Code finds Obsidian. On startup the plugin also removes stale lock files left behind by crashed Obsidian processes.
+- **The built-in terminal.** The terminal spawns your login shell and can start in your home directory. Like *any* terminal, once it's open it can run any command with your user account's privileges and therefore reach any file that account can — inside or outside the vault. Treat it exactly as you would Terminal.app, iTerm, or PowerShell.
+- **Your Python 3 interpreter.** The terminal runs your system's `python3` (or the path you configure) to power a small standard-library pseudo-terminal bridge.
+
+### Running local programs
+The plugin launches local programs that **you** control and configure: your shell, your Python 3 interpreter (for the terminal bridge), and whichever agent CLI you point it at (`claude`, `codex`, `ollama`, etc.). It does **not** download, fetch, or evaluate any code from the internet, and it has **no self-update mechanism** — updates arrive only through Obsidian's normal community-plugin update flow.
+
+### Network use
+**The plugin itself makes no outbound internet connections.** It runs two servers, both bound strictly to `127.0.0.1` (loopback), reachable only by other processes already on your machine — never exposed to your network or the internet. Over that loopback connection it streams your active file path, cursor position, and selected text to the locally-connected agent. Diff previews are rendered locally inside Obsidian from content the agent already proposed; the plugin never sends your note contents back to the agent.
+
+The **coding agent you run through it is third-party software with its own network behavior**. To do its job, an agent typically transmits your prompts and the vault context you share to a remote provider:
+
+- **Claude Code** → Anthropic's API (`api.anthropic.com`), unless redirected.
+- **Codex** → OpenAI's API.
+- **Ollama backend** → a local Ollama server (`http://localhost:11434`); with Ollama, inference stays on your machine.
+
+That data handling is governed by each agent's and provider's own terms and privacy policies, **not by this plugin**. Review them before sharing sensitive notes, and remember that running an agent may require that provider's account, subscription, or API key.
+
+### Third-party code
+The plugin bundles **[xterm.js](https://github.com/xtermjs/xterm.js)** (MIT) for the terminal UI; full attribution is in [`NOTICE`](NOTICE). The Python pseudo-terminal bridge (`src/terminal/bridge.py`) is original code in this repository. No other third-party runtime code is bundled.
 
 ## Security
 
