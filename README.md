@@ -10,7 +10,8 @@
 
 ### Built-in terminal
 - Full terminal emulator inside Obsidian, powered by [xterm.js](https://github.com/xtermjs/xterm.js) and a small pseudo-terminal bridge that runs on your system's Python 3 — no native binaries are bundled or compiled.
-- Opens as a side panel. Honors your `$SHELL`, starts in the vault root by default, and can auto-run a startup command like `claude` on open.
+- **Launches straight into your chosen agent** — Claude Code, or a local model via Ollama — instead of a bare shell prompt. A dropdown at the top of the panel lets you **switch agents on the fly**; switching kills the current session and restarts it with the newly selected agent, and remembers your choice as the default.
+- Honors your `$SHELL` and starts in the vault root by default.
 - Use the ribbon icon or the **"Open Agent Terminal"** command.
 
 ### IDE integration (WebSocket)
@@ -45,7 +46,12 @@ When Claude Code is connected as an IDE, it routes file edits through the IDE in
 
 - **Obsidian** desktop on macOS or Linux. Mobile is not supported; on Windows everything except the built-in terminal works (see [Compatibility](#compatibility)).
 - **Python 3** available on your `PATH` (or set an explicit path in settings). It runs a small standard-library pseudo-terminal bridge for the built-in terminal — there are **no pip packages to install**. Use the **Check** button in settings to verify it.
-- A coding-agent CLI to drive — e.g. [Claude Code](https://docs.claude.com/en/docs/claude-code), Codex, or a local model via [Ollama](https://ollama.com).
+- **The agent CLI(s) you want to use, installed separately on your system** — the plugin *launches* them, it does not bundle them:
+  - **Claude Code agent** → install the [`claude` CLI](https://docs.claude.com/en/docs/claude-code). This is the default agent.
+  - **Ollama agent (local model)** → install **both** [Ollama](https://ollama.com) **and** the [`claude` CLI](https://docs.claude.com/en/docs/claude-code). This option runs `ollama launch claude`, which is Claude Code pointed at a local model — so it needs *both* installed.
+  - Codex (via the MCP server only) → install the `codex` CLI if you use it.
+
+  The terminal launches agents through your interactive login shell, so each CLI must be reachable on the `PATH` your shell config sets up (e.g. what `which claude` / `which ollama` print in a normal terminal).
 
 ## Installation
 
@@ -87,9 +93,10 @@ Both routes into the same tool registry — adding one tool makes it available e
 ### Opening a terminal
 
 1. Enable the plugin.
-2. Click the terminal ribbon icon, or run **"Open Agent Terminal"** from the command palette.
-3. A terminal opens in the right sidebar using your default shell, starting in the vault root.
-4. Configure the shell, startup command (e.g. `claude`), working directory, and font size under **Settings → Agent MCP → Terminal**.
+2. Click the agent ribbon icon, or run **"Open Agent Terminal"** from the command palette.
+3. A terminal opens in the right sidebar and **launches directly into your selected agent** (Claude Code by default) — you land in the agent, not a bare shell.
+4. Use the **Agent** dropdown at the top of the panel to switch between **Claude Code** and **Ollama**. Switching restarts the session with the new agent and remembers it as your default.
+5. Configure the default agent, shell, working directory, and font size under **Settings → Agent MCP**.
 
 ### With Claude Code
 
@@ -104,11 +111,10 @@ The IDE connection is automatic — nothing to register. Claude Code scans `~/.c
 
 Then:
 
-1. Open a terminal inside Obsidian (ribbon icon or command palette) — or use any external terminal with your vault as cwd.
-2. Run `claude`.
-3. Claude prompts you to connect to the discovered Obsidian IDE — accept once.
-4. Inside Claude, `/mcp` should list `agent-mcp` as connected.
-5. Ask something like *"What file am I in?"* → Claude will call `getLatestSelection`.
+1. Open a terminal inside Obsidian (ribbon icon or command palette) — it launches straight into `claude`. (You can also run `claude` from any external terminal with your vault as cwd.)
+2. Claude prompts you to connect to the discovered Obsidian IDE — accept once.
+3. Inside Claude, `/mcp` should list `agent-mcp` as connected.
+4. Ask something like *"What file am I in?"* → Claude will call `getLatestSelection`.
 
 Use the command palette command **"Send to Claude"** in Obsidian to explicitly push your current selection as a context mention.
 
@@ -130,8 +136,8 @@ You can run the **exact same Claude Code experience** against a local model with
 
 **Setup:**
 
-1. Install [Ollama](https://ollama.com) and pull a model with a large (64k+) context window and tool-use support — e.g. `ollama pull qwen3.5`. See [Ollama's Claude Code guide](https://docs.ollama.com/integrations/claude-code) for recommended models.
-2. In **Settings → Agent MCP → Agent backend**, set **Backend** to **Ollama** and enter your model name (e.g. `qwen3.5`).
+1. Install [Ollama](https://ollama.com) **and** the [`claude` CLI](https://docs.claude.com/en/docs/claude-code) (this option runs `ollama launch claude`, so it needs both). Pull a model with a large (64k+) context window and tool-use support — e.g. `ollama pull qwen3.5`. See [Ollama's Claude Code guide](https://docs.ollama.com/integrations/claude-code) for recommended models.
+2. In **Settings → Agent MCP → Default agent**, choose **Ollama** and enter your model name (e.g. `qwen3.5`) — or just pick **Ollama** from the **Agent** dropdown at the top of the terminal.
 3. Open the Agent Terminal. It now launches `ollama launch claude --model <your-model>` instead of `claude`.
 4. As with Claude Code, register the MCP server once so the model can call our tools:
 
@@ -156,11 +162,12 @@ The IDE connection is still automatic — Claude Code discovers Obsidian via the
 
 **Settings → Agent MCP**
 
-- **Agent backend** — Claude Code, or Ollama (local model). See [With a local model via Ollama](#with-a-local-model-via-ollama).
+- **Default agent** — Claude Code, or Ollama (local model), that a new terminal launches with. Also switchable from the **Agent** dropdown at the top of the terminal (switching there restarts the session and updates this default). See [With a local model via Ollama](#with-a-local-model-via-ollama).
+- **Ollama model** — model passed to `ollama launch claude --model <model>` (shown only when the Ollama agent is selected).
 - **Terminal → Python path** — Python 3 interpreter used to run the pseudo-terminal bridge. Blank uses `python3` from your `PATH`. The **Check** button verifies it.
 - **Terminal → Shell** — path to the shell binary. Defaults to `$SHELL`.
 - **Terminal → Shell arguments** — space-separated arguments (e.g. `-l`).
-- **Terminal → Startup command** — typed into the shell on open (e.g. `claude`).
+- **Terminal → Startup command** — overrides the command the **Claude Code** agent launches with. Blank runs `claude`. Ignored for the Ollama agent.
 - **Terminal → Working directory** — vault root or home.
 - **Terminal → Font size** — 10–22.
 
