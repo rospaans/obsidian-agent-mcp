@@ -105,49 +105,41 @@
   height: 1px;
   overflow: hidden;
 }
-.xterm .xterm-dim {
-  opacity: 1;
+.xterm-dim {
+  opacity: 1 !important;
 }
 .xterm-underline-1 {
   text-decoration: underline;
 }
 .xterm-underline-2 {
-  text-decoration-line: underline;
-  text-decoration-style: double;
+  text-decoration: double underline;
 }
 .xterm-underline-3 {
-  text-decoration-line: underline;
-  text-decoration-style: wavy;
+  text-decoration: wavy underline;
 }
 .xterm-underline-4 {
-  text-decoration-line: underline;
-  text-decoration-style: dotted;
+  text-decoration: dotted underline;
 }
 .xterm-underline-5 {
-  text-decoration-line: underline;
-  text-decoration-style: dashed;
+  text-decoration: dashed underline;
 }
 .xterm-overline {
   text-decoration: overline;
 }
 .xterm-overline.xterm-underline-1 {
-  text-decoration-line: overline underline;
+  text-decoration: overline underline;
 }
 .xterm-overline.xterm-underline-2 {
-  text-decoration-line: overline underline;
-  text-decoration-style: double;
+  text-decoration: overline double underline;
 }
 .xterm-overline.xterm-underline-3 {
-  text-decoration-line: overline underline;
-  text-decoration-style: wavy;
+  text-decoration: overline wavy underline;
 }
 .xterm-overline.xterm-underline-4 {
-  text-decoration-line: overline underline;
-  text-decoration-style: dotted;
+  text-decoration: overline dotted underline;
 }
 .xterm-overline.xterm-underline-5 {
-  text-decoration-line: overline underline;
-  text-decoration-style: dashed;
+  text-decoration: overline dashed underline;
 }
 .xterm-strikethrough {
   text-decoration: line-through;

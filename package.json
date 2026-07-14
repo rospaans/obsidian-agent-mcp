@@ -6,7 +6,8 @@
   "scripts": {
     "build": "node esbuild.config.mjs",
     "dev": "node esbuild.config.mjs",
-    "lint": "eslint src"
+    "lint": "eslint src",
+    "typecheck": "tsc --noEmit"
   },
   "keywords": [],
   "author": "Robert Spaans",
@@ -19,6 +20,7 @@
     "@xterm/xterm": "^5.5.0"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "@types/node": "^25.5.0",
     "esbuild": "^0.27.4",
     "eslint": "^9.39.5",
