@@ -1,5 +1,7 @@
 # obsidian-agent-mcp
 
+![Agent MCP — Claude Code running in a terminal inside Obsidian](images/image.png)
+
 > Connect Obsidian to coding agents like Claude Code and Codex so they can work with your vault context. The goal is to let LLMs handle the brunt work in maintaining a knowledge base or task manager. (Or both.)
 >
 > Ships with a **built-in terminal**, so you can run `claude` or `codex` directly inside Obsidian — no other plugins required.
