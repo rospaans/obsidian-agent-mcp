@@ -6,15 +6,7 @@
     "strict": true,
     "noImplicitAny": true,
     "moduleResolution": "node",
-    "skipLibCheck": true,
-    // Resolve `obsidian` from vendored type declarations (types/obsidian.d.ts,
-    // regenerated via `npm run sync-obsidian-types`). The plugin-review audit
-    // type-checks against this tsconfig but does NOT install the plugin's
-    // dependencies, so without this `obsidian` resolves to `any` and cascades
-    // hundreds of false-positive no-unsafe-* warnings. The vendored file carries
-    // a top-of-file eslint-disable so the audit doesn't lint obsidian's own API.
-    "baseUrl": ".",
-    "paths": { "obsidian": ["./types/obsidian"] }
+    "skipLibCheck": true
   },
-  "include": ["src/**/*.ts", "types/**/*.d.ts"]
+  "include": ["src/**/*.ts"]
 }
