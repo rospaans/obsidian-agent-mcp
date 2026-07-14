@@ -17,3 +17,6 @@ node_modules/
 # Environment files (local secrets — .env.example is tracked)
 .env
 .env.local
+
+#files
+review.md

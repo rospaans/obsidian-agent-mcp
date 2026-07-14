@@ -6,7 +6,14 @@
     "strict": true,
     "noImplicitAny": true,
     "moduleResolution": "node",
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    // Resolve `obsidian` from a vendored copy of its type declarations
+    // (types/obsidian.d.ts, refreshed via `npm run sync-obsidian-types`). The
+    // plugin-review audit type-checks against this tsconfig but does not install
+    // the plugin's dependencies, so without this the `obsidian` import resolves to
+    // `any` and cascades hundreds of false-positive no-unsafe-* warnings.
+    "baseUrl": ".",
+    "paths": { "obsidian": ["./types/obsidian"] }
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "types/**/*.d.ts"]
 }
