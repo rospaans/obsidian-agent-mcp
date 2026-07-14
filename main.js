@@ -10062,21 +10062,29 @@ __export(main_exports, {
 });
 module.exports = __toCommonJS(main_exports);
 var import_obsidian5 = require("obsidian");
-var import_node_http = require("node:http");
-var import_node_crypto = require("node:crypto");
-var import_node_crypto2 = require("node:crypto");
-var import_node_fs2 = require("node:fs");
-var import_node_path2 = require("node:path");
-var import_node_os = require("node:os");
+
+// src/nodeApi.ts
+var nodeFs = __toESM(require("node:fs"));
+var nodePath = __toESM(require("node:path"));
+var nodeOs = __toESM(require("node:os"));
+var nodeCrypto = __toESM(require("node:crypto"));
+var nodeHttp = __toESM(require("node:http"));
+var nodeChildProcess = __toESM(require("node:child_process"));
+var nodeStringDecoder = __toESM(require("node:string_decoder"));
+var import_node_buffer = require("node:buffer");
+var Buffer2 = import_node_buffer.Buffer;
+var process2 = window.process;
+var fs = nodeFs;
+var { writeFileSync, renameSync, unlinkSync, readdirSync, readFileSync, mkdirSync, existsSync } = fs;
+var { join } = nodePath;
+var { homedir } = nodeOs;
+var { randomUUID, createHash } = nodeCrypto;
+var { createServer } = nodeHttp;
+var { spawn, execFile } = nodeChildProcess;
+var { StringDecoder } = nodeStringDecoder;
 
 // src/settings.ts
 var import_obsidian = require("obsidian");
-
-// src/terminal/pty.ts
-var import_node_child_process = require("node:child_process");
-var import_node_fs = require("node:fs");
-var import_node_path = require("node:path");
-var import_node_string_decoder = require("node:string_decoder");
 
 // src/terminal/bridge.py
 var bridge_default = `#!/usr/bin/env python3
@@ -10228,7 +10236,7 @@ var PythonPty = class {
   }
   dataCbs = /* @__PURE__ */ new Set();
   exitCbs = /* @__PURE__ */ new Set();
-  decoder = new import_node_string_decoder.StringDecoder("utf8");
+  decoder = new StringDecoder("utf8");
   control;
   exited = false;
   emit(s) {
@@ -10272,18 +10280,18 @@ var PythonPty = class {
   }
 };
 function spawnShell(opts) {
-  const bridgePath = (0, import_node_path.join)(opts.pluginDir, BRIDGE_FILENAME);
-  (0, import_node_fs.writeFileSync)(bridgePath, bridge_default);
+  const bridgePath = join(opts.pluginDir, BRIDGE_FILENAME);
+  writeFileSync(bridgePath, String(bridge_default));
   const cols = opts.cols ?? 80;
   const rows = opts.rows ?? 24;
   const env = {
-    ...process.env,
+    ...process2.env,
     ...opts.env,
     TERM: opts.env?.TERM ?? "xterm-256color",
     COLORTERM: opts.env?.COLORTERM ?? "truecolor"
   };
   const python = opts.pythonPath?.trim() || "python3";
-  const child = (0, import_node_child_process.spawn)(
+  const child = spawn(
     python,
     [bridgePath, opts.shell, opts.cwd, String(cols), String(rows), ...opts.args ?? []],
     { cwd: opts.cwd, env, stdio: ["pipe", "pipe", "pipe", "pipe"] }
@@ -10291,10 +10299,10 @@ function spawnShell(opts) {
   return new PythonPty(child);
 }
 function defaultShell() {
-  if (process.platform === "win32") {
-    return { file: process.env.COMSPEC || "cmd.exe", args: [] };
+  if (process2.platform === "win32") {
+    return { file: process2.env.COMSPEC || "cmd.exe", args: [] };
   }
-  const shell = process.env.SHELL || "/bin/bash";
+  const shell = process2.env.SHELL || "/bin/bash";
   return { file: shell, args: ["-l"] };
 }
 function agentShell(command, customShell, customArgs) {
@@ -10306,7 +10314,7 @@ function checkPython(pythonPath) {
   const python = pythonPath?.trim() || "python3";
   const probe = "import sys, pty, termios, fcntl, struct, select; print(sys.version.split()[0])";
   return new Promise((resolve) => {
-    (0, import_node_child_process.execFile)(python, ["-c", probe], { timeout: 5e3 }, (err, stdout) => {
+    execFile(python, ["-c", probe], { timeout: 5e3 }, (err, stdout) => {
       if (err) {
         resolve({ ok: false, message: `Could not run "${python}": ${err.message}` });
         return;
@@ -10384,7 +10392,7 @@ var AgentMCPSettingsTab = class extends import_obsidian.PluginSettingTab {
     new import_obsidian.Setting(containerEl).setName("Shell").setDesc(
       "Path to the shell executable. Leave blank to use $SHELL (macOS/Linux) or %COMSPEC% (Windows)."
     ).addText(
-      (text) => text.setPlaceholder(process.env.SHELL || "/bin/zsh").setValue(this.plugin.settings.terminal.shell).onChange(async (value) => {
+      (text) => text.setPlaceholder(process2.env.SHELL || "/bin/zsh").setValue(this.plugin.settings.terminal.shell).onChange(async (value) => {
         this.plugin.settings.terminal.shell = value.trim();
         await this.plugin.saveSettings();
       })
@@ -10809,31 +10817,31 @@ var SUPPORTED_MCP_PROTOCOL_VERSIONS = /* @__PURE__ */ new Set([
   "2025-06-18",
   "2025-11-25"
 ]);
-var LOCK_DIR = (0, import_node_path2.join)((0, import_node_os.homedir)(), ".claude", "ide");
+var LOCK_DIR = join(homedir(), ".claude", "ide");
 function createLockFile(port, pid, vaultPath, authToken) {
-  (0, import_node_fs2.mkdirSync)(LOCK_DIR, { recursive: true });
-  const tmp = (0, import_node_path2.join)(LOCK_DIR, `${port}.lock.tmp`);
-  const lockPath = (0, import_node_path2.join)(LOCK_DIR, `${port}.lock`);
-  (0, import_node_fs2.writeFileSync)(tmp, JSON.stringify({ pid, port, workspaceFolders: [vaultPath], ideName: "Obsidian", transport: "ws", authToken }));
-  (0, import_node_fs2.renameSync)(tmp, lockPath);
+  mkdirSync(LOCK_DIR, { recursive: true });
+  const tmp = join(LOCK_DIR, `${port}.lock.tmp`);
+  const lockPath = join(LOCK_DIR, `${port}.lock`);
+  writeFileSync(tmp, JSON.stringify({ pid, port, workspaceFolders: [vaultPath], ideName: "Obsidian", transport: "ws", authToken }));
+  renameSync(tmp, lockPath);
 }
 function removeLockFile(port) {
   try {
-    (0, import_node_fs2.unlinkSync)((0, import_node_path2.join)(LOCK_DIR, `${port}.lock`));
+    unlinkSync(join(LOCK_DIR, `${port}.lock`));
   } catch {
   }
 }
 function cleanStaleLockFiles() {
   try {
-    for (const file of (0, import_node_fs2.readdirSync)(LOCK_DIR).filter((f) => f.endsWith(".lock"))) {
-      const p = (0, import_node_path2.join)(LOCK_DIR, file);
+    for (const file of readdirSync(LOCK_DIR).filter((f) => f.endsWith(".lock"))) {
+      const p = join(LOCK_DIR, file);
       try {
-        const data = JSON.parse((0, import_node_fs2.readFileSync)(p, "utf-8"));
+        const data = JSON.parse(readFileSync(p, "utf-8"));
         if (data.ideName !== "Obsidian") continue;
-        if (typeof data.pid === "number") process.kill(data.pid, 0);
+        if (typeof data.pid === "number") process2.kill(data.pid, 0);
       } catch {
         try {
-          (0, import_node_fs2.unlinkSync)(p);
+          unlinkSync(p);
         } catch {
         }
       }
@@ -10842,7 +10850,7 @@ function cleanStaleLockFiles() {
   }
 }
 function computeAcceptKey(key) {
-  return (0, import_node_crypto2.createHash)("sha1").update(key + GUID).digest("base64");
+  return createHash("sha1").update(key + GUID).digest("base64");
 }
 function parseFrame(buf) {
   const opcode = buf[0] & 15;
@@ -10862,7 +10870,7 @@ function parseFrame(buf) {
     const end = offset + 4;
     if (buf.length < end + len) return null;
     const mask = buf.subarray(offset, end);
-    const payload = Buffer.alloc(len);
+    const payload = Buffer2.alloc(len);
     for (let i = 0; i < len; i++) payload[i] = buf[end + i] ^ mask[i % 4];
     return { opcode, payload, totalLength: end + len };
   }
@@ -10870,25 +10878,25 @@ function parseFrame(buf) {
   return { opcode, payload: buf.subarray(offset, offset + len), totalLength: offset + len };
 }
 function makeFrame(opcode, data) {
-  const payload = typeof data === "string" ? Buffer.from(data) : data;
+  const payload = typeof data === "string" ? Buffer2.from(data) : data;
   const len = payload.length;
   let header;
   if (len < 126) {
-    header = Buffer.alloc(2);
+    header = Buffer2.alloc(2);
     header[0] = 128 | opcode;
     header[1] = len;
   } else if (len < 65536) {
-    header = Buffer.alloc(4);
+    header = Buffer2.alloc(4);
     header[0] = 128 | opcode;
     header[1] = 126;
     header.writeUInt16BE(len, 2);
   } else {
-    header = Buffer.alloc(10);
+    header = Buffer2.alloc(10);
     header[0] = 128 | opcode;
     header[1] = 127;
     header.writeBigUInt64BE(BigInt(len), 2);
   }
-  return Buffer.concat([header, payload]);
+  return Buffer2.concat([header, payload]);
 }
 function asString(v) {
   return typeof v === "string" ? v : "";
@@ -10917,14 +10925,14 @@ var ObsidianAgentMCP = class extends import_obsidian5.Plugin {
     await this.loadSettings();
     this.addSettingTab(new AgentMCPSettingsTab(this.app, this));
     cleanStaleLockFiles();
-    this.authToken = (0, import_node_crypto.randomUUID)();
+    this.authToken = randomUUID();
     this.port = await this.startServer();
     const vaultPath = this.basePath();
-    createLockFile(this.port, process.pid, vaultPath, this.authToken);
+    createLockFile(this.port, process2.pid, vaultPath, this.authToken);
     this.lockRefreshInterval = window.setInterval(() => {
-      if ((0, import_node_fs2.existsSync)((0, import_node_path2.join)(LOCK_DIR, `${this.port}.lock`))) return;
+      if (existsSync(join(LOCK_DIR, `${this.port}.lock`))) return;
       try {
-        createLockFile(this.port, process.pid, vaultPath, this.authToken);
+        createLockFile(this.port, process2.pid, vaultPath, this.authToken);
       } catch {
       }
     }, 1e4);
@@ -10982,7 +10990,7 @@ var ObsidianAgentMCP = class extends import_obsidian5.Plugin {
   }
   // ── Terminal ───────────────────────────────────────────────────────────────
   pluginDir() {
-    return (0, import_node_path2.join)(this.basePath(), this.app.vault.configDir, "plugins", this.manifest.id);
+    return join(this.basePath(), this.app.vault.configDir, "plugins", this.manifest.id);
   }
   getTerminalConfig() {
     const t = this.settings.terminal;
@@ -10990,7 +10998,7 @@ var ObsidianAgentMCP = class extends import_obsidian5.Plugin {
     return {
       pluginDir: this.pluginDir(),
       pythonPath: t.pythonPath,
-      cwd: t.cwd === "home" ? (0, import_node_os.homedir)() : this.basePath(),
+      cwd: t.cwd === "home" ? homedir() : this.basePath(),
       shell: t.shell.trim() || void 0,
       shellArgs,
       fontSize: t.fontSize,
@@ -11256,10 +11264,10 @@ Sec-WebSocket-Accept: ${computeAcceptKey(wsKey)}\r
 ` + (protocol ? `Sec-WebSocket-Protocol: ${protocol}\r
 ` : "") + "\r\n"
     );
-    const client = { socket, buffer: Buffer.alloc(0), alive: true };
+    const client = { socket, buffer: Buffer2.alloc(0), alive: true };
     this.clients.add(client);
     socket.on("data", (data) => {
-      client.buffer = Buffer.concat([client.buffer, data]);
+      client.buffer = Buffer2.concat([client.buffer, data]);
       this.processFrames(client);
     });
     socket.on("close", () => this.clients.delete(client));
@@ -11292,7 +11300,7 @@ Sec-WebSocket-Accept: ${computeAcceptKey(wsKey)}\r
       } else if (frame.opcode === OPCODE.PONG) {
         client.alive = true;
       } else if (frame.opcode === OPCODE.CLOSE) {
-        client.socket.write(makeFrame(OPCODE.CLOSE, Buffer.alloc(0)));
+        client.socket.write(makeFrame(OPCODE.CLOSE, Buffer2.alloc(0)));
         client.socket.destroy();
         this.clients.delete(client);
         break;
@@ -11304,14 +11312,13 @@ Sec-WebSocket-Accept: ${computeAcceptKey(wsKey)}\r
   }
   startServer() {
     return new Promise((resolve, reject) => {
-      this.server = (0, import_node_http.createServer)((_req, res) => {
+      this.server = createServer((_req, res) => {
         res.writeHead(400);
         res.end();
       });
       this.server.on("upgrade", (req, socket, head) => {
-        const s = socket;
-        if (head.length > 0) s.unshift(head);
-        this.handleClient(s, req.headers);
+        if (head.length > 0) socket.unshift(head);
+        this.handleClient(socket, req.headers);
       });
       this.server.on("error", reject);
       this.server.listen(0, "127.0.0.1", () => {
@@ -11324,7 +11331,7 @@ Sec-WebSocket-Accept: ${computeAcceptKey(wsKey)}\r
               continue;
             }
             c.alive = false;
-            if (c.socket.writable) c.socket.write(makeFrame(OPCODE.PING, Buffer.alloc(0)));
+            if (c.socket.writable) c.socket.write(makeFrame(OPCODE.PING, Buffer2.alloc(0)));
           }
         }, 3e4);
         resolve(addr.port);
@@ -11334,7 +11341,7 @@ Sec-WebSocket-Accept: ${computeAcceptKey(wsKey)}\r
   // ── MCP HTTP/SSE server ────────────────────────────────────────────────────
   isLocalhostRequest(req, res) {
     const host = req.headers.host;
-    if (!host || !(/* @__PURE__ */ new Set([`127.0.0.1:${MCP_HTTP_PORT}`, `localhost:${MCP_HTTP_PORT}`])).has(host)) {
+    if (typeof host !== "string" || !(/* @__PURE__ */ new Set([`127.0.0.1:${MCP_HTTP_PORT}`, `localhost:${MCP_HTTP_PORT}`])).has(host)) {
       res.writeHead(403);
       res.end();
       return false;
@@ -11377,7 +11384,7 @@ Sec-WebSocket-Accept: ${computeAcceptKey(wsKey)}\r
     };
   }
   startMcpHttpServer() {
-    this.mcpServer = (0, import_node_http.createServer)((req, res) => {
+    this.mcpServer = createServer((req, res) => {
       if (!this.isLocalhostRequest(req, res)) return;
       const protocolVersion = this.getProtocolVersionHeader(req);
       const url = new URL(req.url ?? "/", `http://127.0.0.1:${MCP_HTTP_PORT}`);
@@ -11421,7 +11428,7 @@ Sec-WebSocket-Accept: ${computeAcceptKey(wsKey)}\r
         return;
       }
       if (url.pathname === "/sse" && req.method === "GET") {
-        const sessionId = (0, import_node_crypto.randomUUID)();
+        const sessionId = randomUUID();
         res.writeHead(200, {
           "Content-Type": "text/event-stream",
           "Cache-Control": "no-cache",

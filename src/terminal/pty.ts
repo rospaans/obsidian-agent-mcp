@@ -1,8 +1,7 @@
-import { spawn, execFile, type ChildProcess } from "node:child_process";
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { StringDecoder } from "node:string_decoder";
-import type { Writable } from "node:stream";
+import {
+  spawn, execFile, writeFileSync, join, StringDecoder, process,
+  type Buffer, type ChildProcess, type EnvVars, type Writable,
+} from "../nodeApi";
 
 import bridgeSource from "./bridge.py";
 
@@ -25,7 +24,7 @@ export interface SpawnShellOptions {
   shell: string;
   args?: string[];
   cwd: string;
-  env?: NodeJS.ProcessEnv;
+  env?: EnvVars;
   cols?: number;
   rows?: number;
 }
@@ -85,7 +84,7 @@ class PythonPty implements IPty {
   }
 
   kill(signal?: string): void {
-    try { this.child.kill(signal as NodeJS.Signals | undefined); } catch { /* already gone */ }
+    try { this.child.kill(signal); } catch { /* already gone */ }
   }
 }
 
@@ -93,7 +92,7 @@ export function spawnShell(opts: SpawnShellOptions): IPty {
   const bridgePath = join(opts.pluginDir, BRIDGE_FILENAME);
   // Write the bridge script beside main.js on each launch: cheap, and keeps it
   // in sync with the bundled source after a plugin update.
-  writeFileSync(bridgePath, bridgeSource);
+  writeFileSync(bridgePath, String(bridgeSource));
 
   const cols = opts.cols ?? 80;
   const rows = opts.rows ?? 24;

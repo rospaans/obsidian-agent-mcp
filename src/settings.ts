@@ -1,6 +1,7 @@
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type ObsidianAgentMCP from "./main";
 import { checkPython } from "./terminal/pty";
+import { process } from "./nodeApi";
 
 // Agents the terminal can launch. Adding an entry here surfaces it in both the
 // settings dropdown and the in-terminal toolbar switcher.

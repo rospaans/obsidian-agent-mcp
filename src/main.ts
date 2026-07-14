@@ -1,11 +1,10 @@
 import { Plugin, WorkspaceLeaf, MarkdownView, TFile } from "obsidian";
-import { createServer, Server, IncomingMessage, ServerResponse } from "node:http";
-import { Socket } from "node:net";
-import { randomUUID } from "node:crypto";
-import { createHash } from "node:crypto";
-import { writeFileSync, renameSync, unlinkSync, readdirSync, readFileSync, mkdirSync, existsSync } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
+import {
+  Buffer, process, createServer, randomUUID, createHash,
+  writeFileSync, renameSync, unlinkSync, readdirSync, readFileSync, mkdirSync, existsSync,
+  join, homedir,
+  type Server, type IncomingMessage, type ServerResponse, type Socket,
+} from "./nodeApi";
 
 import { DEFAULT_SETTINGS, AgentMCPSettingsTab, type PluginSettings, type AgentBackend } from "./settings";
 import { createEditorTools, getSelectionData, getVaultBasePath } from "./tools/editor";
@@ -564,9 +563,8 @@ export default class ObsidianAgentMCP extends Plugin {
     return new Promise((resolve, reject) => {
       this.server = createServer((_req, res) => { res.writeHead(400); res.end(); });
       this.server.on("upgrade", (req, socket, head) => {
-        const s = socket as Socket;
-        if (head.length > 0) s.unshift(head);
-        this.handleClient(s, req.headers);
+        if (head.length > 0) socket.unshift(head);
+        this.handleClient(socket, req.headers);
       });
       this.server.on("error", reject);
       this.server.listen(0, "127.0.0.1", () => {
@@ -588,7 +586,7 @@ export default class ObsidianAgentMCP extends Plugin {
   private isLocalhostRequest(req: IncomingMessage, res: ServerResponse): boolean {
     // Block DNS-rebinding: the Host header must be our exact bind address.
     const host = req.headers.host;
-    if (!host || !new Set([`127.0.0.1:${MCP_HTTP_PORT}`, `localhost:${MCP_HTTP_PORT}`]).has(host)) {
+    if (typeof host !== "string" || !new Set([`127.0.0.1:${MCP_HTTP_PORT}`, `localhost:${MCP_HTTP_PORT}`]).has(host)) {
       res.writeHead(403); res.end(); return false;
     }
     // Block browser-based requests: legitimate MCP clients (Claude Desktop, curl)
@@ -717,7 +715,7 @@ export default class ObsidianAgentMCP extends Plugin {
 
       res.writeHead(404, { "MCP-Protocol-Version": protocolVersion }); res.end();
     });
-    this.mcpServer.on("error", (err: NodeJS.ErrnoException) => {
+    this.mcpServer.on("error", (err: Error & { code?: string }) => {
       if (err.code !== "EADDRINUSE") console.error("[agent-mcp] MCP HTTP error:", err);
     });
     this.mcpServer.listen(MCP_HTTP_PORT, "127.0.0.1");

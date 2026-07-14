@@ -2,8 +2,11 @@
  * Bundled to styles.css at build time (esbuild inlines the xterm @import). This
  * is the file Obsidian loads automatically for the plugin, so all plugin styling
  * lives here rather than being assigned inline in TypeScript.
+ *
+ * xterm.css is a vendored, lightly patched copy (see its header) rather than
+ * the node_modules file, so the shipped stylesheet passes Obsidian's CSS lint.
  */
-@import "@xterm/xterm/css/xterm.css";
+@import "./xterm.css";
 
 /* ── Terminal view ────────────────────────────────────────────────────────── */
 .agent-mcp-terminal-container {
