@@ -249,6 +249,12 @@ The plugin bundles **[xterm.js](https://github.com/xtermjs/xterm.js)** (MIT) for
 - Stale lock files from crashed Obsidian processes are cleaned up automatically on startup
 - The built-in terminal spawns processes (a shell, plus your configured Python 3 for the PTY bridge) with the same privileges as Obsidian. Treat it like any other terminal on your machine.
 
+### About the automated-review warnings
+
+Obsidian's automated plugin review reports two capability warnings — **direct filesystem access** and **shell execution**. Both are inherent to what this plugin is for (the Claude Code lock file in `~/.claude/ide/` and the built-in terminal) and are disclosed in detail above.
+
+It also reports a large number of `@typescript-eslint/no-unsafe-*` warnings. These are false positives from a [known issue in the hosted audit](https://forum.obsidian.md/t/plugin-audit-reports-spurious-type-errors-because-it-doesnt-resolve-obsidian-types/115198): it type-checks the source without installing dependencies, so the `obsidian` and `node:*` imports resolve to `any` and every use of them is flagged. With dependencies installed (`npm install && npm run lint`) the same ESLint ruleset reports zero `no-unsafe-*` findings.
+
 ---
 
 ## License & attribution

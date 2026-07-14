@@ -1,7 +1,7 @@
 {
   "id": "agent-mcp",
   "name": "Agent MCP",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "minAppVersion": "1.7.7",
   "description": "Run coding agents (Claude Code, Codex, Ollama) in a built-in terminal, and expose the active file selection and open editors to them over MCP.",
   "author": "Robert Spaans",
