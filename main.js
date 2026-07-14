@@ -10093,7 +10093,7 @@ Protocol
   fd 3:   control channel, lines of "cols,rows\\\\n" -> TIOCSWINSZ + SIGWINCH
   exit:   process exits with the shell's exit code
 """
-import os, sys, pty, fcntl, termios, struct, select, signal, errno
+import os, sys, pty, fcntl, termios, struct, select, signal, errno, time
 
 
 def set_winsize(fd, rows, cols):
@@ -10122,6 +10122,26 @@ def main():
 
     # parent
     set_winsize(master_fd, rows, cols)
+
+    def terminate(_signum, _frame):
+        # The host (Obsidian) killed this bridge \u2014 an agent switch or a closed
+        # pane. Tear down the whole child process group so the agent can't survive
+        # as an orphan, even if it ignores the SIGHUP the pty delivers on close.
+        # pty.fork() calls setsid() in the child, so its pgid equals its pid.
+        for sig in (signal.SIGHUP, signal.SIGTERM):
+            try:
+                os.killpg(pid, sig)
+            except OSError:
+                pass
+        time.sleep(0.2)  # brief grace for a clean exit before the hard kill
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except OSError:
+            pass
+        os._exit(0)
+
+    signal.signal(signal.SIGTERM, terminate)
+    signal.signal(signal.SIGHUP, terminate)
 
     ctrl_fd = 3
     try:
@@ -10193,7 +10213,8 @@ var BRIDGE_FILENAME = ".pty-bridge.py";
 var PythonPty = class {
   constructor(child) {
     this.child = child;
-    this.control = child.stdio[3] ?? null;
+    const controlFd = child.stdio[3];
+    this.control = controlFd && "write" in controlFd ? controlFd : null;
     child.stdout?.on("data", (b) => this.emit(this.decoder.write(b)));
     child.stderr?.on("data", (b) => this.emit(b.toString()));
     child.on("error", (err) => {
@@ -10298,7 +10319,10 @@ function checkPython(pythonPath) {
 // src/settings.ts
 var AGENT_BACKENDS = [
   { id: "claude", label: "Claude Code" },
-  { id: "ollama", label: "Ollama (local model)" }
+  { id: "ollama", label: "Ollama (local model)" },
+  { id: "codex", label: "Codex" },
+  // A plain interactive shell with no agent, so you can run other commands.
+  { id: "terminal", label: "Terminal" }
 ];
 var DEFAULT_SETTINGS = {
   terminal: {
@@ -10985,9 +11009,12 @@ var ObsidianAgentMCP = class extends import_obsidian5.Plugin {
   // runs `claude` (or the user's override). The Ollama agent launches Claude Code
   // via `ollama launch claude`, pointing it at a local model — everything
   // downstream (IDE connection, MCP tools, diff previews) behaves identically
-  // because it is still Claude Code.
+  // because it is still Claude Code. The Codex agent runs `codex`, which reaches
+  // our tools through the MCP server (registered once via `codex mcp add`).
   resolveStartupCommand(backend) {
     const t = this.settings.terminal;
+    if (backend === "terminal") return "";
+    if (backend === "codex") return "codex";
     if (backend === "ollama") {
       const model = t.ollamaModel.trim();
       return model ? `ollama launch claude --model ${model}` : "ollama launch claude";

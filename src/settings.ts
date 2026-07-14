@@ -4,11 +4,14 @@ import { checkPython } from "./terminal/pty";
 
 // Agents the terminal can launch. Adding an entry here surfaces it in both the
 // settings dropdown and the in-terminal toolbar switcher.
-export type AgentBackend = "claude" | "ollama";
+export type AgentBackend = "claude" | "ollama" | "codex" | "terminal";
 
 export const AGENT_BACKENDS: ReadonlyArray<{ id: AgentBackend; label: string }> = [
   { id: "claude", label: "Claude Code" },
   { id: "ollama", label: "Ollama (local model)" },
+  { id: "codex", label: "Codex" },
+  // A plain interactive shell with no agent, so you can run other commands.
+  { id: "terminal", label: "Terminal" },
 ];
 
 export interface TerminalSettings {

@@ -12,7 +12,7 @@ Protocol
   fd 3:   control channel, lines of "cols,rows\\n" -> TIOCSWINSZ + SIGWINCH
   exit:   process exits with the shell's exit code
 """
-import os, sys, pty, fcntl, termios, struct, select, signal, errno
+import os, sys, pty, fcntl, termios, struct, select, signal, errno, time
 
 
 def set_winsize(fd, rows, cols):
@@ -41,6 +41,26 @@ def main():
 
     # parent
     set_winsize(master_fd, rows, cols)
+
+    def terminate(_signum, _frame):
+        # The host (Obsidian) killed this bridge — an agent switch or a closed
+        # pane. Tear down the whole child process group so the agent can't survive
+        # as an orphan, even if it ignores the SIGHUP the pty delivers on close.
+        # pty.fork() calls setsid() in the child, so its pgid equals its pid.
+        for sig in (signal.SIGHUP, signal.SIGTERM):
+            try:
+                os.killpg(pid, sig)
+            except OSError:
+                pass
+        time.sleep(0.2)  # brief grace for a clean exit before the hard kill
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except OSError:
+            pass
+        os._exit(0)
+
+    signal.signal(signal.SIGTERM, terminate)
+    signal.signal(signal.SIGHUP, terminate)
 
     ctrl_fd = 3
     try:

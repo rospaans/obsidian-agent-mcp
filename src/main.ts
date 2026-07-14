@@ -244,9 +244,13 @@ export default class ObsidianAgentMCP extends Plugin {
   // runs `claude` (or the user's override). The Ollama agent launches Claude Code
   // via `ollama launch claude`, pointing it at a local model — everything
   // downstream (IDE connection, MCP tools, diff previews) behaves identically
-  // because it is still Claude Code.
+  // because it is still Claude Code. The Codex agent runs `codex`, which reaches
+  // our tools through the MCP server (registered once via `codex mcp add`).
   private resolveStartupCommand(backend: AgentBackend): string {
     const t = this.settings.terminal;
+    // No agent: an empty command makes the view launch a plain interactive shell.
+    if (backend === "terminal") return "";
+    if (backend === "codex") return "codex";
     if (backend === "ollama") {
       const model = t.ollamaModel.trim();
       return model ? `ollama launch claude --model ${model}` : "ollama launch claude";

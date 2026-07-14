@@ -38,7 +38,10 @@ class PythonPty implements IPty {
   private exited = false;
 
   constructor(private child: ChildProcess) {
-    this.control = (child.stdio[3] as Writable | undefined) ?? null;
+    // fd 3 is the control pipe (a Writable). `"write" in` narrows the
+    // Readable | Writable union without a type assertion.
+    const controlFd = child.stdio[3];
+    this.control = controlFd && "write" in controlFd ? controlFd : null;
 
     child.stdout?.on("data", (b: Buffer) => this.emit(this.decoder.write(b)));
     child.stderr?.on("data", (b: Buffer) => this.emit(b.toString()));
