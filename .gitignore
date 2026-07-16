@@ -18,5 +18,5 @@ node_modules/
 .env
 .env.local
 
-#files
-review.md
+# Local-only docs (submission checklist, scanner review snapshots — kept out of the repo)
+docs/archive/

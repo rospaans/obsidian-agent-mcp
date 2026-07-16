@@ -1,22 +1,41 @@
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type ObsidianAgentMCP from "./main";
 import { checkPython } from "./terminal/pty";
+import type { Availability } from "./terminal/availability";
 import { process } from "./nodeApi";
 
 // Agents the terminal can launch. Adding an entry here surfaces it in both the
 // settings dropdown and the in-terminal toolbar switcher.
 export type AgentBackend = "claude" | "ollama" | "codex" | "terminal";
 
-export const AGENT_BACKENDS: ReadonlyArray<{ id: AgentBackend; label: string }> = [
-  { id: "claude", label: "Claude Code" },
-  { id: "ollama", label: "Ollama (local model)" },
-  { id: "codex", label: "Codex" },
+export interface AgentBackendMeta {
+  id: AgentBackend;
+  label: string;
+  // requiresCli backends launch an external tool that must be installed; their
+  // availability is probed so the terminal can show an install prompt instead of
+  // erroring. The plain terminal is just a shell, so it is never probed.
+  requiresCli: boolean;
+  // Binary name to probe on PATH. For "claude" this is a default that a custom
+  // startup command can override (see resolveBackendCli in main.ts).
+  cliName: string;
+  // Where to send the user to install the CLI, linked from the "not installed"
+  // message panel. Empty for the plain terminal.
+  installUrl: string;
+}
+
+export const AGENT_BACKENDS: ReadonlyArray<AgentBackendMeta> = [
+  { id: "claude", label: "Claude Code", requiresCli: true, cliName: "claude", installUrl: "https://claude.com/product/claude-code" },
+  { id: "ollama", label: "Ollama (local model)", requiresCli: true, cliName: "ollama", installUrl: "https://docs.ollama.com/quickstart" },
+  { id: "codex", label: "Codex", requiresCli: true, cliName: "codex", installUrl: "https://learn.chatgpt.com/docs/codex/cli" },
   // A plain interactive shell with no agent, so you can run other commands.
-  { id: "terminal", label: "Terminal" },
+  { id: "terminal", label: "Terminal", requiresCli: false, cliName: "", installUrl: "" },
 ];
 
 export interface TerminalSettings {
   backend: AgentBackend;
+  // Which agents appear in the settings default dropdown and the in-terminal
+  // switcher. Lets users hide agents whose CLI they don't use.
+  enabledBackends: Record<AgentBackend, boolean>;
   ollamaModel: string;
   pythonPath: string;
   shell: string;
@@ -33,6 +52,7 @@ export interface PluginSettings {
 export const DEFAULT_SETTINGS: PluginSettings = {
   terminal: {
     backend: "claude",
+    enabledBackends: { claude: true, ollama: true, codex: true, terminal: true },
     ollamaModel: "",
     pythonPath: "",
     shell: "",
@@ -52,7 +72,15 @@ export class AgentMCPSettingsTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    new Setting(containerEl).setName("Agent backend").setHeading();
+    new Setting(containerEl).setName("Agents").setHeading();
+
+    this.renderAgentToggles(containerEl);
+
+    const t = this.plugin.settings.terminal;
+    // Offer every enabled agent as the launch default (plus whatever is currently
+    // selected). Agents that aren't installed are still selectable — the terminal
+    // shows an install prompt for them rather than failing.
+    const selectable = AGENT_BACKENDS.filter(b => b.id === t.backend || t.enabledBackends[b.id]);
 
     new Setting(containerEl)
       .setName("Default agent")
@@ -64,9 +92,9 @@ export class AgentMCPSettingsTab extends PluginSettingTab {
         "work identically.",
       )
       .addDropdown(drop => {
-        for (const { id, label } of AGENT_BACKENDS) drop.addOption(id, label);
+        for (const { id, label } of selectable) drop.addOption(id, label);
         drop
-          .setValue(this.plugin.settings.terminal.backend)
+          .setValue(t.backend)
           .onChange(async value => {
             this.plugin.settings.terminal.backend = value as AgentBackend;
             await this.plugin.saveSettings();
@@ -193,5 +221,67 @@ export class AgentMCPSettingsTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           }),
       );
+  }
+
+  // One row per agent: a toggle to show/hide it in the switcher, plus a live
+  // availability badge. Required-CLI agents whose tool isn't detected are grayed
+  // out (can't be enabled until installed) with a Recheck button. Probes are lazy
+  // and cached, so opening this tab triggers at most one check per agent.
+  private renderAgentToggles(containerEl: HTMLElement): void {
+    const pending: Promise<unknown>[] = [];
+
+    for (const meta of AGENT_BACKENDS) {
+      const setting = new Setting(containerEl).setName(meta.label);
+
+      if (!meta.requiresCli) {
+        setting.setDesc("Always available.");
+        setting.addToggle(toggle => toggle.setValue(true).setDisabled(true));
+        continue;
+      }
+
+      const state = this.plugin.getBackendAvailability(meta.id);
+      const enabled = this.plugin.settings.terminal.enabledBackends[meta.id];
+      setting.setDesc(availabilityDesc(state));
+
+      // You can enable any agent even if its CLI isn't installed — selecting it
+      // just shows an install prompt in the terminal instead of running.
+      setting.addToggle(toggle =>
+        toggle
+          .setValue(enabled)
+          .onChange(async value => {
+            this.plugin.settings.terminal.enabledBackends[meta.id] = value;
+            await this.plugin.saveSettings();
+            this.plugin.refreshTerminalBackends();
+            this.display();
+          }),
+      );
+
+      setting.addButton(button =>
+        button
+          .setButtonText("Recheck")
+          .onClick(async () => {
+            button.setButtonText("Checking…").setDisabled(true);
+            await this.plugin.recheckBackendAvailability(meta.id);
+            this.plugin.refreshTerminalBackends();
+            this.display();
+          }),
+      );
+
+      if (state === "unknown" || state === "checking") {
+        pending.push(this.plugin.ensureBackendAvailability(meta.id));
+      }
+    }
+
+    // Re-render once, after any first-time probes resolve, to fill in the badges
+    // and enable toggles for tools that turned out to be installed.
+    if (pending.length) void Promise.all(pending).then(() => this.display());
+  }
+}
+
+function availabilityDesc(state: Availability): string {
+  switch (state) {
+    case "available": return "✓ Detected.";
+    case "missing": return "⚠ Not found on your PATH — enabling shows an install prompt.";
+    default: return "Checking if the CLI is installed…";
   }
 }

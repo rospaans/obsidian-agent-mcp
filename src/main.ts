@@ -6,7 +6,8 @@ import {
   type Server, type IncomingMessage, type ServerResponse, type Socket,
 } from "./nodeApi";
 
-import { DEFAULT_SETTINGS, AgentMCPSettingsTab, type PluginSettings, type AgentBackend } from "./settings";
+import { DEFAULT_SETTINGS, AGENT_BACKENDS, AgentMCPSettingsTab, type PluginSettings, type AgentBackend } from "./settings";
+import { BackendAvailability, type Availability, type ProbeShell } from "./terminal/availability";
 import { createEditorTools, getSelectionData, getVaultBasePath } from "./tools/editor";
 import type { ToolDefinition } from "./tools/types";
 import { AgentTerminalView, AGENT_TERMINAL_VIEW_TYPE, type TerminalConfig } from "./terminal/view";
@@ -124,6 +125,7 @@ export default class ObsidianAgentMCP extends Plugin {
   // restore it in the main area once the diff closes — otherwise Obsidian falls
   // back to an arbitrary neighbouring tab.
   private diffReturnLeaves = new Map<string, WorkspaceLeaf>();
+  private availability = new BackendAvailability();
 
   settings: PluginSettings = DEFAULT_SETTINGS;
 
@@ -197,7 +199,16 @@ export default class ObsidianAgentMCP extends Plugin {
     this.settings = {
       ...DEFAULT_SETTINGS,
       ...data,
-      terminal: { ...DEFAULT_SETTINGS.terminal, ...(data.terminal ?? {}) },
+      terminal: {
+        ...DEFAULT_SETTINGS.terminal,
+        ...(data.terminal ?? {}),
+        // Deep-merge so a config saved before this key existed (or a partial one)
+        // keeps every agent enabled by default rather than dropping to undefined.
+        enabledBackends: {
+          ...DEFAULT_SETTINGS.terminal.enabledBackends,
+          ...(data.terminal?.enabledBackends ?? {}),
+        },
+      },
     };
   }
 
@@ -220,6 +231,11 @@ export default class ObsidianAgentMCP extends Plugin {
     const shellArgs = t.shellArgs.trim().length
       ? t.shellArgs.split(/\s+/).filter(Boolean)
       : undefined;
+    // Warm the availability cache for enabled agents so the switcher and the
+    // launch-time gate reflect reality without blocking; ensure() dedupes.
+    for (const b of AGENT_BACKENDS) {
+      if (b.requiresCli && t.enabledBackends[b.id]) void this.ensureBackendAvailability(b.id);
+    }
     return {
       pluginDir: this.pluginDir(),
       pythonPath: t.pythonPath,
@@ -228,8 +244,14 @@ export default class ObsidianAgentMCP extends Plugin {
       shellArgs,
       fontSize: t.fontSize,
       backend: t.backend,
+      backends: this.enabledBackendList(),
+      getAvailability: backend => this.getBackendAvailability(backend),
+      ensureAvailability: backend => this.ensureBackendAvailability(backend),
+      recheckAvailability: backend => this.recheckBackendAvailability(backend),
+      cliName: backend => this.resolveBackendCli(backend) ?? "",
       resolveStartupCommand: backend => this.resolveStartupCommand(backend),
       onBackendChange: backend => this.persistBackend(backend),
+      openSettings: () => this.openPluginSettings(),
       // Exporting the IDE server port makes Claude Code auto-connect to Obsidian
       // on startup — reading the lock file for the auth token — exactly as it does
       // in an IDE-integrated terminal. Without it the user must run `/ide` and pick
@@ -255,6 +277,70 @@ export default class ObsidianAgentMCP extends Plugin {
       return model ? `ollama launch claude --model ${model}` : "ollama launch claude";
     }
     return t.startupCommand.trim() || "claude";
+  }
+
+  // Opens this plugin's own settings tab. `app.setting` is an Obsidian internal
+  // not in the public typings, so it's reached through a narrow typed shape
+  // rather than `any` (which the community review scanner flags).
+  private openPluginSettings(): void {
+    const setting = (this.app as unknown as {
+      setting: { open(): void; openTabById(id: string): void };
+    }).setting;
+    setting.open();
+    setting.openTabById(this.manifest.id);
+  }
+
+  // Pushes the current enabled-agents list into any open terminal so its switcher
+  // updates instantly when the setting changes — no app reload required.
+  refreshTerminalBackends(): void {
+    for (const leaf of this.app.workspace.getLeavesOfType(AGENT_TERMINAL_VIEW_TYPE)) {
+      if (leaf.view instanceof AgentTerminalView) leaf.view.refreshBackends();
+    }
+  }
+
+  // Agents shown in the in-terminal switcher: every agent the user has enabled,
+  // whether or not its CLI is installed. Selecting an uninstalled one shows an
+  // install prompt in the terminal instead of launching.
+  private enabledBackendList(): Array<{ id: AgentBackend; label: string }> {
+    return AGENT_BACKENDS
+      .filter(b => this.settings.terminal.enabledBackends[b.id])
+      .map(({ id, label }) => ({ id, label }));
+  }
+
+  // The binary probed to decide availability. For Claude a custom startup command
+  // overrides the default (we probe its first token). Non-CLI agents return null.
+  private resolveBackendCli(backend: AgentBackend): string | null {
+    const meta = AGENT_BACKENDS.find(b => b.id === backend);
+    if (!meta || !meta.requiresCli) return null;
+    if (backend === "claude") {
+      const custom = this.settings.terminal.startupCommand.trim();
+      if (custom) return custom.split(/\s+/)[0] || meta.cliName;
+    }
+    return meta.cliName;
+  }
+
+  private probeShell(): ProbeShell {
+    const t = this.settings.terminal;
+    const shellArgs = t.shellArgs.trim().length
+      ? t.shellArgs.split(/\s+/).filter(Boolean)
+      : undefined;
+    return { shell: t.shell.trim() || undefined, shellArgs };
+  }
+
+  getBackendAvailability(backend: AgentBackend): Availability {
+    return this.resolveBackendCli(backend) ? this.availability.get(backend) : "available";
+  }
+
+  ensureBackendAvailability(backend: AgentBackend): Promise<Availability> {
+    const cli = this.resolveBackendCli(backend);
+    if (!cli) return Promise.resolve<Availability>("available");
+    return this.availability.ensure(backend, cli, this.probeShell());
+  }
+
+  recheckBackendAvailability(backend: AgentBackend): Promise<Availability> {
+    const cli = this.resolveBackendCli(backend);
+    if (!cli) return Promise.resolve<Availability>("available");
+    return this.availability.recheck(backend, cli, this.probeShell());
   }
 
   // The in-terminal agent switcher persists its selection here so it becomes the

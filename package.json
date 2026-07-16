@@ -1,6 +1,6 @@
 {
   "name": "obsidian_agent_mcp",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Connect Obsidian to coding agents over MCP with a built-in terminal.",
   "main": "main.js",
   "scripts": {

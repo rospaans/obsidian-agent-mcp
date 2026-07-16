@@ -1,4 +1,4 @@
-import { ItemView, WorkspaceLeaf } from "obsidian";
+import { ItemView, WorkspaceLeaf, setIcon } from "obsidian";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -7,6 +7,7 @@ import { CanvasAddon } from "@xterm/addon-canvas";
 
 import { agentShell, defaultShell, spawnShell, type IPty } from "./pty";
 import { AGENT_BACKENDS, type AgentBackend } from "../settings";
+import type { Availability } from "./availability";
 
 export const AGENT_TERMINAL_VIEW_TYPE = "agent-terminal";
 
@@ -24,10 +25,22 @@ export interface TerminalConfig {
   env?: Record<string, string>;
   /** Agent the terminal starts with. */
   backend: AgentBackend;
+  /** Agents to list in the switcher (enabled, and not known to be missing). */
+  backends: Array<{ id: AgentBackend; label: string }>;
+  /** Cached availability of an agent's CLI; safe to call synchronously. */
+  getAvailability: (backend: AgentBackend) => Availability;
+  /** Probe availability if unknown; resolves to the settled state. */
+  ensureAvailability: (backend: AgentBackend) => Promise<Availability>;
+  /** Force a fresh probe (after the user installs a CLI); resolves to the state. */
+  recheckAvailability: (backend: AgentBackend) => Promise<Availability>;
+  /** The CLI binary name for an agent, used in the "not installed" message. */
+  cliName: (backend: AgentBackend) => string;
   /** Command auto-run to launch the given agent, so a bare shell is never shown. */
   resolveStartupCommand: (backend: AgentBackend) => string;
   /** Called when the user switches agents from the toolbar, to persist the choice. */
   onBackendChange: (backend: AgentBackend) => void;
+  /** Opens this plugin's settings tab (toolbar gear button). */
+  openSettings: () => void;
 }
 
 export class AgentTerminalView extends ItemView {
@@ -41,6 +54,10 @@ export class AgentTerminalView extends ItemView {
   private cfg: TerminalConfig | null = null;
   private currentBackend: AgentBackend = "claude";
   private host: HTMLElement | null = null;
+  private select: HTMLSelectElement | null = null;
+  // Bumped on every start/switch so an async availability probe from a superseded
+  // session can't spawn into the wrong (or a torn-down) terminal.
+  private sessionSeq = 0;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -77,7 +94,7 @@ export class AgentTerminalView extends ItemView {
     this.buildToolbar(container);
     this.host = container.createDiv({ cls: "agent-mcp-terminal-host" });
 
-    this.startSession();
+    void this.startSession();
   }
 
   // Toolbar with the agent switcher. Switching restarts the session with the
@@ -89,32 +106,85 @@ export class AgentTerminalView extends ItemView {
     const select = bar.createEl("select", {
       cls: "dropdown agent-mcp-terminal-select",
     });
-    for (const { id, label } of AGENT_BACKENDS) {
-      const opt = select.createEl("option", { value: id, text: label });
-      if (id === this.currentBackend) opt.selected = true;
-    }
+    this.select = select;
+    this.populateBackendOptions();
 
     this.registerDomEvent(select, "change", () => {
       const next = select.value as AgentBackend;
       if (next === this.currentBackend) return;
       this.switchBackend(next);
     });
+
+    const settingsBtn = bar.createEl("button", {
+      cls: "clickable-icon agent-mcp-terminal-settings-btn",
+      attr: { "aria-label": "Open plugin settings" },
+    });
+    setIcon(settingsBtn, "settings");
+    this.registerDomEvent(settingsBtn, "click", () => this.cfg?.openSettings());
+  }
+
+  // Rebuilds the switcher options from the current enabled/available agent list,
+  // always including the running agent so the control reflects the live session.
+  private populateBackendOptions(): void {
+    const select = this.select;
+    if (!select) return;
+    select.empty();
+
+    const options = this.cfg ? [...this.cfg.backends] : [];
+    if (!options.some(b => b.id === this.currentBackend)) {
+      const meta = AGENT_BACKENDS.find(b => b.id === this.currentBackend);
+      if (meta) options.unshift({ id: meta.id, label: meta.label });
+    }
+    for (const { id, label } of options) {
+      const opt = select.createEl("option", { value: id, text: label });
+      if (id === this.currentBackend) opt.selected = true;
+    }
+  }
+
+  // Called by the plugin when the enabled-agents setting changes, so an already
+  // open terminal updates its switcher instantly without a reload. Pulls a fresh
+  // config (its backends list reflects the new toggles) and repopulates.
+  refreshBackends(): void {
+    if (this.cfg) this.cfg.backends = this.configProvider().backends;
+    this.populateBackendOptions();
   }
 
   private switchBackend(backend: AgentBackend): void {
     this.currentBackend = backend;
     this.cfg?.onBackendChange(backend);
     this.stopSession();
-    this.startSession();
+    void this.startSession();
   }
 
   // Builds the terminal + PTY and auto-runs the agent command. Reused by
   // onOpen and by switchBackend, so it starts from a clean host element.
-  private startSession(): void {
+  private async startSession(): Promise<void> {
     const cfg = this.cfg;
     const host = this.host;
     if (!cfg || !host) return;
+    const seq = ++this.sessionSeq;
+    const backend = this.currentBackend;
     host.empty();
+
+    // Gate CLI-backed agents on availability BEFORE building a terminal. If the
+    // tool isn't installed we show a message panel and launch nothing — never a
+    // shell (the user shouldn't land at a prompt for an agent they didn't get).
+    const meta = AGENT_BACKENDS.find(b => b.id === backend);
+    if (meta?.requiresCli) {
+      let state = cfg.getAvailability(backend);
+      if (state === "unknown" || state === "checking") {
+        this.renderInfoPanel(host, `Checking whether ${meta.label} is installed…`);
+        state = await cfg.ensureAvailability(backend);
+        if (seq !== this.sessionSeq) return;
+        host.empty();
+      }
+      if (state === "missing") {
+        this.renderMissingPanel(host, backend);
+        return;
+      }
+    }
+
+    const command = cfg.resolveStartupCommand(backend);
 
     const term = new Terminal({
       fontFamily: cfg.fontFamily || "Menlo, Consolas, \"Liberation Mono\", monospace",
@@ -155,7 +225,7 @@ export class AgentTerminalView extends ItemView {
     this.scheduleInitialFit(host);
 
     try {
-      this.pty = this.startPty(cfg, term.cols, term.rows);
+      this.pty = this.startPty(cfg, command, term.cols, term.rows);
     } catch (err) {
       term.writeln("\x1b[31mFailed to start shell:\x1b[0m " + String(err));
       term.writeln("");
@@ -171,6 +241,63 @@ export class AgentTerminalView extends ItemView {
     this.resizeObserver.observe(host);
 
     term.focus();
+  }
+
+  // A transient status line while an agent's CLI is being probed.
+  private renderInfoPanel(host: HTMLElement, message: string): void {
+    const panel = host.createDiv({ cls: "agent-mcp-terminal-message" });
+    panel.createDiv({ cls: "agent-mcp-terminal-message-body", text: message });
+  }
+
+  // Shown instead of launching a CLI-backed agent whose tool isn't installed. No
+  // shell, no install directories (those change and add maintenance) — just which
+  // CLI to install, plus Recheck (after installing) and a jump to settings.
+  private renderMissingPanel(host: HTMLElement, backend: AgentBackend): void {
+    const meta = AGENT_BACKENDS.find(b => b.id === backend);
+    const label = meta?.label ?? backend;
+    const cli = this.cfg?.cliName(backend) || backend;
+
+    const panel = host.createDiv({ cls: "agent-mcp-terminal-message" });
+    panel.createDiv({ cls: "agent-mcp-terminal-message-title", text: `${label} is not installed` });
+
+    const body = panel.createDiv({ cls: "agent-mcp-terminal-message-body" });
+    body.appendText("The ");
+    body.createEl("code", { text: cli });
+    body.appendText(" command wasn't found on your PATH. Install it, then recheck.");
+
+    const actions = panel.createDiv({ cls: "agent-mcp-terminal-message-actions" });
+
+    if (meta?.installUrl) {
+      // A real link so Obsidian opens it in the system browser; styled as a button.
+      const install = actions.createEl("a", {
+        cls: "agent-mcp-terminal-message-link",
+        text: `Install ${label}`,
+        href: meta.installUrl,
+        attr: { target: "_blank", rel: "noopener" },
+      });
+      install.addClass("mod-cta");
+    }
+
+    const recheck = actions.createEl("button", { text: "Recheck" });
+    this.registerDomEvent(recheck, "click", () => {
+      recheck.setText("Checking…");
+      recheck.disabled = true;
+      void this.recheckAndMaybeStart(backend);
+    });
+
+    const settings = actions.createEl("button", { text: "Open settings" });
+    this.registerDomEvent(settings, "click", () => this.cfg?.openSettings());
+  }
+
+  // Re-probe after the user says they installed the CLI, then re-run the session:
+  // it builds the terminal if the tool is now found, or re-renders the panel.
+  private async recheckAndMaybeStart(backend: AgentBackend): Promise<void> {
+    const cfg = this.cfg;
+    if (!cfg) return;
+    await cfg.recheckAvailability(backend);
+    if (this.currentBackend !== backend) return;
+    this.populateBackendOptions();
+    void this.startSession();
   }
 
   private scheduleInitialFit(host: HTMLElement): void {
@@ -209,12 +336,12 @@ export class AgentTerminalView extends ItemView {
     }
   }
 
-  private startPty(cfg: TerminalConfig, cols: number, rows: number): IPty {
-    const command = cfg.resolveStartupCommand(this.currentBackend).trim();
-    // Launch straight into the agent (never a bare shell). If somehow no command
-    // resolves, fall back to an interactive login shell rather than nothing.
-    const { file, args } = command
-      ? agentShell(command, cfg.shell, cfg.shellArgs)
+  private startPty(cfg: TerminalConfig, command: string, cols: number, rows: number): IPty {
+    const cmd = command.trim();
+    // Launch straight into the agent (never a bare shell). If no command resolves
+    // (plain terminal, or a missing-CLI fallback), use an interactive login shell.
+    const { file, args } = cmd
+      ? agentShell(cmd, cfg.shell, cfg.shellArgs)
       : (cfg.shell ? { file: cfg.shell, args: cfg.shellArgs ?? [] } : defaultShell());
     return spawnShell({
       pluginDir: cfg.pluginDir,
@@ -263,6 +390,7 @@ export class AgentTerminalView extends ItemView {
     this.stopSession();
     this.host = null;
     this.cfg = null;
+    this.select = null;
   }
 }
 

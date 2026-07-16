@@ -37,6 +37,10 @@
   font-size: 12px;
 }
 
+.agent-mcp-terminal-settings-btn {
+  margin-left: auto;
+}
+
 .agent-mcp-terminal-host {
   width: 100%;
   flex: 1 1 auto;
@@ -45,6 +49,53 @@
 
 .agent-mcp-terminal-host .xterm-viewport {
   overflow-y: auto;
+}
+
+/* Shown in place of a terminal when a required CLI isn't installed. */
+.agent-mcp-terminal-message {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-start;
+  max-width: 460px;
+  padding: 24px;
+  color: var(--text-normal);
+}
+
+.agent-mcp-terminal-message-title {
+  font-weight: 600;
+  font-size: var(--font-ui-medium, 15px);
+}
+
+.agent-mcp-terminal-message-body {
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.agent-mcp-terminal-message-body code {
+  font-family: var(--font-monospace, monospace);
+}
+
+.agent-mcp-terminal-message-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+/* Anchor styled to match the sibling buttons. */
+.agent-mcp-terminal-message-link {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--size-4-1) var(--size-4-3);
+  border-radius: var(--button-radius, var(--radius-s));
+  font-size: var(--font-ui-small);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.agent-mcp-terminal-message-link:hover {
+  text-decoration: none;
 }
 
 /* ── Diff preview view ────────────────────────────────────────────────────── */
