@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-07-16
+
+### Fixed
+
+- Implemented `getSettingDefinitions()` on the settings tab to opt into Obsidian
+  1.13+'s declarative settings API, clearing the community review-scan caution.
+  The tab still renders imperatively (its per-agent toggles and availability
+  badges are dynamic); the method returns no definitions for now.
+- Cleared the CSS-lint warnings about partially-supported `text-decoration` by
+  collapsing the vendored xterm double/wavy/dotted/dashed underline and
+  overline+underline variants to a plain underline (rarely-used ANSI extended
+  underline styles; plain underline used for links is unaffected).
+
 ## [1.1.0] - 2026-07-16
 
 ### Added
