@@ -10350,6 +10350,14 @@ var AgentMCPSettingsTab = class extends import_obsidian.PluginSettingTab {
     super(app, plugin);
     this.plugin = plugin;
   }
+  // Opt in to Obsidian 1.13+'s declarative settings API. This tab renders
+  // imperatively in display() below — much of it is dynamic (per-agent toggles,
+  // live availability badges) and has no static declarative form — so there are
+  // no definitions to expose to settings search yet. Declaring the method (even
+  // empty) is the API's supported entry point and clears the review-scan caution.
+  getSettingDefinitions() {
+    return [];
+  }
   display() {
     const { containerEl } = this;
     containerEl.empty();
