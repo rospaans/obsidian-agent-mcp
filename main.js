@@ -10326,15 +10326,16 @@ function checkPython(pythonPath) {
 
 // src/settings.ts
 var AGENT_BACKENDS = [
-  { id: "claude", label: "Claude Code" },
-  { id: "ollama", label: "Ollama (local model)" },
-  { id: "codex", label: "Codex" },
+  { id: "claude", label: "Claude Code", requiresCli: true, cliName: "claude", installUrl: "https://claude.com/product/claude-code" },
+  { id: "ollama", label: "Ollama (local model)", requiresCli: true, cliName: "ollama", installUrl: "https://docs.ollama.com/quickstart" },
+  { id: "codex", label: "Codex", requiresCli: true, cliName: "codex", installUrl: "https://learn.chatgpt.com/docs/codex/cli" },
   // A plain interactive shell with no agent, so you can run other commands.
-  { id: "terminal", label: "Terminal" }
+  { id: "terminal", label: "Terminal", requiresCli: false, cliName: "", installUrl: "" }
 ];
 var DEFAULT_SETTINGS = {
   terminal: {
     backend: "claude",
+    enabledBackends: { claude: true, ollama: true, codex: true, terminal: true },
     ollamaModel: "",
     pythonPath: "",
     shell: "",
@@ -10352,12 +10353,15 @@ var AgentMCPSettingsTab = class extends import_obsidian.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    new import_obsidian.Setting(containerEl).setName("Agent backend").setHeading();
+    new import_obsidian.Setting(containerEl).setName("Agents").setHeading();
+    this.renderAgentToggles(containerEl);
+    const t = this.plugin.settings.terminal;
+    const selectable = AGENT_BACKENDS.filter((b) => b.id === t.backend || t.enabledBackends[b.id]);
     new import_obsidian.Setting(containerEl).setName("Default agent").setDesc(
       'Which agent a new terminal launches with. You can also switch agents from the dropdown at the top of the terminal \u2014 switching there restarts the session and updates this default. "Ollama" runs `ollama launch claude`, which points Claude Code at a local Ollama model \u2014 the IDE connection, MCP tools, and diff previews all work identically.'
     ).addDropdown((drop) => {
-      for (const { id, label } of AGENT_BACKENDS) drop.addOption(id, label);
-      drop.setValue(this.plugin.settings.terminal.backend).onChange(async (value) => {
+      for (const { id, label } of selectable) drop.addOption(id, label);
+      drop.setValue(t.backend).onChange(async (value) => {
         this.plugin.settings.terminal.backend = value;
         await this.plugin.saveSettings();
         this.display();
@@ -10423,6 +10427,102 @@ var AgentMCPSettingsTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
+  }
+  // One row per agent: a toggle to show/hide it in the switcher, plus a live
+  // availability badge. Required-CLI agents whose tool isn't detected are grayed
+  // out (can't be enabled until installed) with a Recheck button. Probes are lazy
+  // and cached, so opening this tab triggers at most one check per agent.
+  renderAgentToggles(containerEl) {
+    const pending = [];
+    for (const meta of AGENT_BACKENDS) {
+      const setting = new import_obsidian.Setting(containerEl).setName(meta.label);
+      if (!meta.requiresCli) {
+        setting.setDesc("Always available.");
+        setting.addToggle((toggle) => toggle.setValue(true).setDisabled(true));
+        continue;
+      }
+      const state = this.plugin.getBackendAvailability(meta.id);
+      const enabled = this.plugin.settings.terminal.enabledBackends[meta.id];
+      setting.setDesc(availabilityDesc(state));
+      setting.addToggle(
+        (toggle) => toggle.setValue(enabled).onChange(async (value) => {
+          this.plugin.settings.terminal.enabledBackends[meta.id] = value;
+          await this.plugin.saveSettings();
+          this.plugin.refreshTerminalBackends();
+          this.display();
+        })
+      );
+      setting.addButton(
+        (button) => button.setButtonText("Recheck").onClick(async () => {
+          button.setButtonText("Checking\u2026").setDisabled(true);
+          await this.plugin.recheckBackendAvailability(meta.id);
+          this.plugin.refreshTerminalBackends();
+          this.display();
+        })
+      );
+      if (state === "unknown" || state === "checking") {
+        pending.push(this.plugin.ensureBackendAvailability(meta.id));
+      }
+    }
+    if (pending.length) void Promise.all(pending).then(() => this.display());
+  }
+};
+function availabilityDesc(state) {
+  switch (state) {
+    case "available":
+      return "\u2713 Detected.";
+    case "missing":
+      return "\u26A0 Not found on your PATH \u2014 enabling shows an install prompt.";
+    default:
+      return "Checking if the CLI is installed\u2026";
+  }
+}
+
+// src/terminal/availability.ts
+var SAFE_CLI = /^[\w.\-/]+$/;
+function probeCli(cliName, shell) {
+  if (process2.platform === "win32") return Promise.resolve(true);
+  if (!SAFE_CLI.test(cliName)) return Promise.resolve(true);
+  const file = shell.shell?.trim() || defaultShell().file;
+  const loginArgs = shell.shellArgs && shell.shellArgs.length ? shell.shellArgs : ["-i", "-l"];
+  const args = [...loginArgs, "-c", `command -v ${cliName}`];
+  return new Promise((resolve) => {
+    execFile(file, args, { timeout: 4e3 }, (err, stdout) => {
+      resolve(!err && stdout.trim().length > 0);
+    });
+  });
+}
+var BackendAvailability = class {
+  cache = /* @__PURE__ */ new Map();
+  inflight = /* @__PURE__ */ new Map();
+  // Cached state without triggering a probe. Safe to call on every render.
+  get(backend) {
+    return this.cache.get(backend) ?? "unknown";
+  }
+  // Probe once if the result isn't already known; return the cached result
+  // otherwise. Concurrent calls for the same backend await the same probe.
+  ensure(backend, cliName, shell) {
+    const cached = this.cache.get(backend);
+    if (cached === "available" || cached === "missing") return Promise.resolve(cached);
+    const existing = this.inflight.get(backend);
+    if (existing) return existing;
+    this.cache.set(backend, "checking");
+    const p = probeCli(cliName, shell).then((ok) => this.settle(backend, ok)).catch(() => this.settle(backend, false));
+    this.inflight.set(backend, p);
+    return p;
+  }
+  // Force a fresh probe, discarding any cached result. Used after the user
+  // installs a CLI and asks to recheck.
+  recheck(backend, cliName, shell) {
+    this.cache.delete(backend);
+    this.inflight.delete(backend);
+    return this.ensure(backend, cliName, shell);
+  }
+  settle(backend, ok) {
+    const state = ok ? "available" : "missing";
+    this.cache.set(backend, state);
+    this.inflight.delete(backend);
+    return state;
   }
 };
 
@@ -10531,6 +10631,10 @@ var AgentTerminalView = class extends import_obsidian3.ItemView {
   cfg = null;
   currentBackend = "claude";
   host = null;
+  select = null;
+  // Bumped on every start/switch so an async availability probe from a superseded
+  // session can't spawn into the wrong (or a torn-down) terminal.
+  sessionSeq = 0;
   getViewType() {
     return AGENT_TERMINAL_VIEW_TYPE;
   }
@@ -10551,7 +10655,7 @@ var AgentTerminalView = class extends import_obsidian3.ItemView {
     this.currentBackend = this.cfg.backend;
     this.buildToolbar(container);
     this.host = container.createDiv({ cls: "agent-mcp-terminal-host" });
-    this.startSession();
+    void this.startSession();
   }
   // Toolbar with the agent switcher. Switching restarts the session with the
   // newly selected agent so the user always stays inside an agent interface.
@@ -10561,29 +10665,73 @@ var AgentTerminalView = class extends import_obsidian3.ItemView {
     const select = bar.createEl("select", {
       cls: "dropdown agent-mcp-terminal-select"
     });
-    for (const { id, label } of AGENT_BACKENDS) {
-      const opt = select.createEl("option", { value: id, text: label });
-      if (id === this.currentBackend) opt.selected = true;
-    }
+    this.select = select;
+    this.populateBackendOptions();
     this.registerDomEvent(select, "change", () => {
       const next = select.value;
       if (next === this.currentBackend) return;
       this.switchBackend(next);
     });
+    const settingsBtn = bar.createEl("button", {
+      cls: "clickable-icon agent-mcp-terminal-settings-btn",
+      attr: { "aria-label": "Open plugin settings" }
+    });
+    (0, import_obsidian3.setIcon)(settingsBtn, "settings");
+    this.registerDomEvent(settingsBtn, "click", () => this.cfg?.openSettings());
+  }
+  // Rebuilds the switcher options from the current enabled/available agent list,
+  // always including the running agent so the control reflects the live session.
+  populateBackendOptions() {
+    const select = this.select;
+    if (!select) return;
+    select.empty();
+    const options = this.cfg ? [...this.cfg.backends] : [];
+    if (!options.some((b) => b.id === this.currentBackend)) {
+      const meta = AGENT_BACKENDS.find((b) => b.id === this.currentBackend);
+      if (meta) options.unshift({ id: meta.id, label: meta.label });
+    }
+    for (const { id, label } of options) {
+      const opt = select.createEl("option", { value: id, text: label });
+      if (id === this.currentBackend) opt.selected = true;
+    }
+  }
+  // Called by the plugin when the enabled-agents setting changes, so an already
+  // open terminal updates its switcher instantly without a reload. Pulls a fresh
+  // config (its backends list reflects the new toggles) and repopulates.
+  refreshBackends() {
+    if (this.cfg) this.cfg.backends = this.configProvider().backends;
+    this.populateBackendOptions();
   }
   switchBackend(backend) {
     this.currentBackend = backend;
     this.cfg?.onBackendChange(backend);
     this.stopSession();
-    this.startSession();
+    void this.startSession();
   }
   // Builds the terminal + PTY and auto-runs the agent command. Reused by
   // onOpen and by switchBackend, so it starts from a clean host element.
-  startSession() {
+  async startSession() {
     const cfg = this.cfg;
     const host = this.host;
     if (!cfg || !host) return;
+    const seq = ++this.sessionSeq;
+    const backend = this.currentBackend;
     host.empty();
+    const meta = AGENT_BACKENDS.find((b) => b.id === backend);
+    if (meta?.requiresCli) {
+      let state = cfg.getAvailability(backend);
+      if (state === "unknown" || state === "checking") {
+        this.renderInfoPanel(host, `Checking whether ${meta.label} is installed\u2026`);
+        state = await cfg.ensureAvailability(backend);
+        if (seq !== this.sessionSeq) return;
+        host.empty();
+      }
+      if (state === "missing") {
+        this.renderMissingPanel(host, backend);
+        return;
+      }
+    }
+    const command = cfg.resolveStartupCommand(backend);
     const term = new import_xterm.Terminal({
       fontFamily: cfg.fontFamily || 'Menlo, Consolas, "Liberation Mono", monospace',
       fontSize: cfg.fontSize || 13,
@@ -10611,7 +10759,7 @@ var AgentTerminalView = class extends import_obsidian3.ItemView {
     this.fit = fit;
     this.scheduleInitialFit(host);
     try {
-      this.pty = this.startPty(cfg, term.cols, term.rows);
+      this.pty = this.startPty(cfg, command, term.cols, term.rows);
     } catch (err) {
       term.writeln("\x1B[31mFailed to start shell:\x1B[0m " + String(err));
       term.writeln("");
@@ -10624,6 +10772,53 @@ var AgentTerminalView = class extends import_obsidian3.ItemView {
     this.resizeObserver = new ResizeObserver(() => this.scheduleResize());
     this.resizeObserver.observe(host);
     term.focus();
+  }
+  // A transient status line while an agent's CLI is being probed.
+  renderInfoPanel(host, message) {
+    const panel = host.createDiv({ cls: "agent-mcp-terminal-message" });
+    panel.createDiv({ cls: "agent-mcp-terminal-message-body", text: message });
+  }
+  // Shown instead of launching a CLI-backed agent whose tool isn't installed. No
+  // shell, no install directories (those change and add maintenance) — just which
+  // CLI to install, plus Recheck (after installing) and a jump to settings.
+  renderMissingPanel(host, backend) {
+    const meta = AGENT_BACKENDS.find((b) => b.id === backend);
+    const label = meta?.label ?? backend;
+    const cli = this.cfg?.cliName(backend) || backend;
+    const panel = host.createDiv({ cls: "agent-mcp-terminal-message" });
+    panel.createDiv({ cls: "agent-mcp-terminal-message-title", text: `${label} is not installed` });
+    const body = panel.createDiv({ cls: "agent-mcp-terminal-message-body" });
+    body.appendText("The ");
+    body.createEl("code", { text: cli });
+    body.appendText(" command wasn't found on your PATH. Install it, then recheck.");
+    const actions = panel.createDiv({ cls: "agent-mcp-terminal-message-actions" });
+    if (meta?.installUrl) {
+      const install = actions.createEl("a", {
+        cls: "agent-mcp-terminal-message-link",
+        text: `Install ${label}`,
+        href: meta.installUrl,
+        attr: { target: "_blank", rel: "noopener" }
+      });
+      install.addClass("mod-cta");
+    }
+    const recheck = actions.createEl("button", { text: "Recheck" });
+    this.registerDomEvent(recheck, "click", () => {
+      recheck.setText("Checking\u2026");
+      recheck.disabled = true;
+      void this.recheckAndMaybeStart(backend);
+    });
+    const settings = actions.createEl("button", { text: "Open settings" });
+    this.registerDomEvent(settings, "click", () => this.cfg?.openSettings());
+  }
+  // Re-probe after the user says they installed the CLI, then re-run the session:
+  // it builds the terminal if the tool is now found, or re-renders the panel.
+  async recheckAndMaybeStart(backend) {
+    const cfg = this.cfg;
+    if (!cfg) return;
+    await cfg.recheckAvailability(backend);
+    if (this.currentBackend !== backend) return;
+    this.populateBackendOptions();
+    void this.startSession();
   }
   scheduleInitialFit(host) {
     window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
@@ -10654,9 +10849,9 @@ var AgentTerminalView = class extends import_obsidian3.ItemView {
     } catch {
     }
   }
-  startPty(cfg, cols, rows) {
-    const command = cfg.resolveStartupCommand(this.currentBackend).trim();
-    const { file, args } = command ? agentShell(command, cfg.shell, cfg.shellArgs) : cfg.shell ? { file: cfg.shell, args: cfg.shellArgs ?? [] } : defaultShell();
+  startPty(cfg, command, cols, rows) {
+    const cmd = command.trim();
+    const { file, args } = cmd ? agentShell(cmd, cfg.shell, cfg.shellArgs) : cfg.shell ? { file: cfg.shell, args: cfg.shellArgs ?? [] } : defaultShell();
     return spawnShell({
       pluginDir: cfg.pluginDir,
       pythonPath: cfg.pythonPath,
@@ -10710,6 +10905,7 @@ var AgentTerminalView = class extends import_obsidian3.ItemView {
     this.stopSession();
     this.host = null;
     this.cfg = null;
+    this.select = null;
   }
 };
 function readTheme() {
@@ -10920,6 +11116,7 @@ var ObsidianAgentMCP = class extends import_obsidian5.Plugin {
   // restore it in the main area once the diff closes — otherwise Obsidian falls
   // back to an arbitrary neighbouring tab.
   diffReturnLeaves = /* @__PURE__ */ new Map();
+  availability = new BackendAvailability();
   settings = DEFAULT_SETTINGS;
   async onload() {
     await this.loadSettings();
@@ -10979,7 +11176,16 @@ var ObsidianAgentMCP = class extends import_obsidian5.Plugin {
     this.settings = {
       ...DEFAULT_SETTINGS,
       ...data,
-      terminal: { ...DEFAULT_SETTINGS.terminal, ...data.terminal ?? {} }
+      terminal: {
+        ...DEFAULT_SETTINGS.terminal,
+        ...data.terminal ?? {},
+        // Deep-merge so a config saved before this key existed (or a partial one)
+        // keeps every agent enabled by default rather than dropping to undefined.
+        enabledBackends: {
+          ...DEFAULT_SETTINGS.terminal.enabledBackends,
+          ...data.terminal?.enabledBackends ?? {}
+        }
+      }
     };
   }
   async saveSettings() {
@@ -10995,6 +11201,9 @@ var ObsidianAgentMCP = class extends import_obsidian5.Plugin {
   getTerminalConfig() {
     const t = this.settings.terminal;
     const shellArgs = t.shellArgs.trim().length ? t.shellArgs.split(/\s+/).filter(Boolean) : void 0;
+    for (const b of AGENT_BACKENDS) {
+      if (b.requiresCli && t.enabledBackends[b.id]) void this.ensureBackendAvailability(b.id);
+    }
     return {
       pluginDir: this.pluginDir(),
       pythonPath: t.pythonPath,
@@ -11003,8 +11212,14 @@ var ObsidianAgentMCP = class extends import_obsidian5.Plugin {
       shellArgs,
       fontSize: t.fontSize,
       backend: t.backend,
+      backends: this.enabledBackendList(),
+      getAvailability: (backend) => this.getBackendAvailability(backend),
+      ensureAvailability: (backend) => this.ensureBackendAvailability(backend),
+      recheckAvailability: (backend) => this.recheckBackendAvailability(backend),
+      cliName: (backend) => this.resolveBackendCli(backend) ?? "",
       resolveStartupCommand: (backend) => this.resolveStartupCommand(backend),
       onBackendChange: (backend) => this.persistBackend(backend),
+      openSettings: () => this.openPluginSettings(),
       // Exporting the IDE server port makes Claude Code auto-connect to Obsidian
       // on startup — reading the lock file for the auth token — exactly as it does
       // in an IDE-integrated terminal. Without it the user must run `/ide` and pick
@@ -11028,6 +11243,56 @@ var ObsidianAgentMCP = class extends import_obsidian5.Plugin {
       return model ? `ollama launch claude --model ${model}` : "ollama launch claude";
     }
     return t.startupCommand.trim() || "claude";
+  }
+  // Opens this plugin's own settings tab. `app.setting` is an Obsidian internal
+  // not in the public typings, so it's reached through a narrow typed shape
+  // rather than `any` (which the community review scanner flags).
+  openPluginSettings() {
+    const setting = this.app.setting;
+    setting.open();
+    setting.openTabById(this.manifest.id);
+  }
+  // Pushes the current enabled-agents list into any open terminal so its switcher
+  // updates instantly when the setting changes — no app reload required.
+  refreshTerminalBackends() {
+    for (const leaf of this.app.workspace.getLeavesOfType(AGENT_TERMINAL_VIEW_TYPE)) {
+      if (leaf.view instanceof AgentTerminalView) leaf.view.refreshBackends();
+    }
+  }
+  // Agents shown in the in-terminal switcher: every agent the user has enabled,
+  // whether or not its CLI is installed. Selecting an uninstalled one shows an
+  // install prompt in the terminal instead of launching.
+  enabledBackendList() {
+    return AGENT_BACKENDS.filter((b) => this.settings.terminal.enabledBackends[b.id]).map(({ id, label }) => ({ id, label }));
+  }
+  // The binary probed to decide availability. For Claude a custom startup command
+  // overrides the default (we probe its first token). Non-CLI agents return null.
+  resolveBackendCli(backend) {
+    const meta = AGENT_BACKENDS.find((b) => b.id === backend);
+    if (!meta || !meta.requiresCli) return null;
+    if (backend === "claude") {
+      const custom = this.settings.terminal.startupCommand.trim();
+      if (custom) return custom.split(/\s+/)[0] || meta.cliName;
+    }
+    return meta.cliName;
+  }
+  probeShell() {
+    const t = this.settings.terminal;
+    const shellArgs = t.shellArgs.trim().length ? t.shellArgs.split(/\s+/).filter(Boolean) : void 0;
+    return { shell: t.shell.trim() || void 0, shellArgs };
+  }
+  getBackendAvailability(backend) {
+    return this.resolveBackendCli(backend) ? this.availability.get(backend) : "available";
+  }
+  ensureBackendAvailability(backend) {
+    const cli = this.resolveBackendCli(backend);
+    if (!cli) return Promise.resolve("available");
+    return this.availability.ensure(backend, cli, this.probeShell());
+  }
+  recheckBackendAvailability(backend) {
+    const cli = this.resolveBackendCli(backend);
+    if (!cli) return Promise.resolve("available");
+    return this.availability.recheck(backend, cli, this.probeShell());
   }
   // The in-terminal agent switcher persists its selection here so it becomes the
   // default the next time a terminal is opened.

@@ -12,7 +12,8 @@
 
 ### Built-in terminal
 - Full terminal emulator inside Obsidian, powered by [xterm.js](https://github.com/xtermjs/xterm.js) and a small pseudo-terminal bridge that runs on your system's Python 3 — no native binaries are bundled or compiled.
-- **Launches straight into your chosen agent** — Claude Code, or a local model via Ollama — instead of a bare shell prompt. A dropdown at the top of the panel lets you **switch agents on the fly** (or drop to a plain **Terminal** with no agent); switching kills the current session and restarts it with the newly selected option, and remembers your choice as the default.
+- **Launches straight into your chosen agent** — Claude Code, or a local model via Ollama — instead of a bare shell prompt. A dropdown at the top of the panel lets you **switch agents on the fly** (or drop to a plain **Terminal** with no agent); switching kills the current session and restarts it with the newly selected option, and remembers your choice as the default. A gear button beside the dropdown jumps straight to the plugin settings.
+- **Enable only the agents you use.** Each agent has a toggle in settings, so the switcher shows just the ones you want — installed or not. If you select an agent whose CLI is missing, the terminal shows a short "not installed" message with a link to install it (plus **Recheck** and **Open settings** buttons) instead of erroring or dropping you into a shell. Settings also reports whether each agent's CLI was detected on your `PATH`.
 - Honors your `$SHELL` and starts in the vault root by default.
 - Use the ribbon icon or the **"Open Agent Terminal"** command.
 
@@ -53,7 +54,7 @@ When Claude Code is connected as an IDE, it routes file edits through the IDE in
   - **Ollama agent (local model)** → install **both** [Ollama](https://ollama.com) **and** the [`claude` CLI](https://docs.claude.com/en/docs/claude-code). This option runs `ollama launch claude`, which is Claude Code pointed at a local model — so it needs *both* installed.
   - Codex (via the MCP server only) → install the `codex` CLI if you use it.
 
-  The terminal launches agents through your interactive login shell, so each CLI must be reachable on the `PATH` your shell config sets up (e.g. what `which claude` / `which ollama` print in a normal terminal).
+  The terminal launches agents through your interactive login shell, so each CLI must be reachable on the `PATH` your shell config sets up (e.g. what `which claude` / `which ollama` print in a normal terminal). The plugin detects each agent's CLI the same way, so an agent you haven't installed shows an install prompt (with a link) instead of failing at launch — no need to install a CLI you don't want.
 
 ## Installation
 
@@ -97,8 +98,8 @@ Both routes into the same tool registry — adding one tool makes it available e
 1. Enable the plugin.
 2. Click the agent ribbon icon, or run **"Open Agent Terminal"** from the command palette.
 3. A terminal opens in the right sidebar and **launches directly into your selected agent** (Claude Code by default) — you land in the agent, not a bare shell.
-4. Use the **Agent** dropdown at the top of the panel to switch between **Claude Code**, **Ollama**, **Codex**, and a plain **Terminal** (a normal shell with no agent, for running other commands). Switching restarts the session and remembers your choice as the default.
-5. Configure the default agent, shell, working directory, and font size under **Settings → Agent MCP**.
+4. Use the **Agent** dropdown at the top of the panel to switch between **Claude Code**, **Ollama**, **Codex**, and a plain **Terminal** (a normal shell with no agent, for running other commands). Every agent you've enabled appears here; picking one whose CLI isn't installed shows an install prompt instead of launching. Switching restarts the session and remembers your choice as the default. The gear button beside the dropdown opens the plugin settings.
+5. Under **Settings → Agent MCP → Agents**, toggle which agents to show. Each row reports whether its CLI was detected on your `PATH`, with a **Recheck** button to re-probe after installing. Configure the default agent, shell, working directory, and font size in the same tab.
 
 ### With Claude Code
 
