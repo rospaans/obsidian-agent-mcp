@@ -266,12 +266,14 @@ export default class ObsidianAgentMCP extends Plugin {
   // via `ollama launch claude`, pointing it at a local model — everything
   // downstream (IDE connection, MCP tools, diff previews) behaves identically
   // because it is still Claude Code. The Codex agent runs `codex`, which reaches
-  // our tools through the MCP server (registered once via `codex mcp add`).
+  // our tools through the MCP server (registered once via `codex mcp add`). The
+  // Antigravity agent runs `agy`, Google's terminal coding agent.
   private resolveStartupCommand(backend: AgentBackend): string {
     const t = this.settings.terminal;
     // No agent: an empty command makes the view launch a plain interactive shell.
     if (backend === "terminal") return "";
     if (backend === "codex") return "codex";
+    if (backend === "antigravity") return "agy";
     if (backend === "ollama") {
       const model = t.ollamaModel.trim();
       return model ? `ollama launch claude --model ${model}` : "ollama launch claude";
