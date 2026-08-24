@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-08-24
+
+### Added
+
+- **Antigravity agent.** Google's terminal coding agent (`agy`) is now a
+  selectable agent, alongside Claude Code, Ollama, and Codex. It gets the same
+  CLI availability detection, "not installed" install prompt, and switcher entry
+  as the other agents.
+
+### Fixed
+
+- **The Terminal agent can now be turned off.** Its Settings → Agents toggle was
+  previously locked on; it's now a normal toggle that hides the plain shell from
+  the switcher like any other agent. Disabling the last remaining enabled agent
+  is refused so a new terminal always has something to launch.
+
 ## [1.1.1] - 2026-07-16
 
 ### Fixed

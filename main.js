@@ -10329,13 +10329,14 @@ var AGENT_BACKENDS = [
   { id: "claude", label: "Claude Code", requiresCli: true, cliName: "claude", installUrl: "https://claude.com/product/claude-code" },
   { id: "ollama", label: "Ollama (local model)", requiresCli: true, cliName: "ollama", installUrl: "https://docs.ollama.com/quickstart" },
   { id: "codex", label: "Codex", requiresCli: true, cliName: "codex", installUrl: "https://learn.chatgpt.com/docs/codex/cli" },
+  { id: "antigravity", label: "Antigravity", requiresCli: true, cliName: "agy", installUrl: "https://antigravity.google/docs/cli/install/" },
   // A plain interactive shell with no agent, so you can run other commands.
   { id: "terminal", label: "Terminal", requiresCli: false, cliName: "", installUrl: "" }
 ];
 var DEFAULT_SETTINGS = {
   terminal: {
     backend: "claude",
-    enabledBackends: { claude: true, ollama: true, codex: true, terminal: true },
+    enabledBackends: { claude: true, ollama: true, codex: true, antigravity: true, terminal: true },
     ollamaModel: "",
     pythonPath: "",
     shell: "",
@@ -10436,6 +10437,21 @@ var AgentMCPSettingsTab = class extends import_obsidian.PluginSettingTab {
       })
     );
   }
+  // Persists an agent's enabled state, but refuses to disable the last one — an
+  // empty switcher would leave a new terminal with nothing to launch. Reverts the
+  // toggle and warns instead. Re-renders so the default dropdown stays in sync.
+  async setBackendEnabled(id, value, toggle) {
+    const enabled = this.plugin.settings.terminal.enabledBackends;
+    if (!value && Object.values({ ...enabled, [id]: false }).every((v) => !v)) {
+      new import_obsidian.Notice("Keep at least one agent enabled.");
+      toggle.setValue(true);
+      return;
+    }
+    enabled[id] = value;
+    await this.plugin.saveSettings();
+    this.plugin.refreshTerminalBackends();
+    this.display();
+  }
   // One row per agent: a toggle to show/hide it in the switcher, plus a live
   // availability badge. Required-CLI agents whose tool isn't detected are grayed
   // out (can't be enabled until installed) with a Recheck button. Probes are lazy
@@ -10444,21 +10460,18 @@ var AgentMCPSettingsTab = class extends import_obsidian.PluginSettingTab {
     const pending = [];
     for (const meta of AGENT_BACKENDS) {
       const setting = new import_obsidian.Setting(containerEl).setName(meta.label);
+      const enabled = this.plugin.settings.terminal.enabledBackends[meta.id];
       if (!meta.requiresCli) {
-        setting.setDesc("Always available.");
-        setting.addToggle((toggle) => toggle.setValue(true).setDisabled(true));
+        setting.setDesc("A plain interactive shell \u2014 always available when enabled.");
+        setting.addToggle(
+          (toggle) => toggle.setValue(enabled).onChange((value) => void this.setBackendEnabled(meta.id, value, toggle))
+        );
         continue;
       }
       const state = this.plugin.getBackendAvailability(meta.id);
-      const enabled = this.plugin.settings.terminal.enabledBackends[meta.id];
       setting.setDesc(availabilityDesc(state));
       setting.addToggle(
-        (toggle) => toggle.setValue(enabled).onChange(async (value) => {
-          this.plugin.settings.terminal.enabledBackends[meta.id] = value;
-          await this.plugin.saveSettings();
-          this.plugin.refreshTerminalBackends();
-          this.display();
-        })
+        (toggle) => toggle.setValue(enabled).onChange((value) => void this.setBackendEnabled(meta.id, value, toggle))
       );
       setting.addButton(
         (button) => button.setButtonText("Recheck").onClick(async () => {
@@ -11241,11 +11254,13 @@ var ObsidianAgentMCP = class extends import_obsidian5.Plugin {
   // via `ollama launch claude`, pointing it at a local model — everything
   // downstream (IDE connection, MCP tools, diff previews) behaves identically
   // because it is still Claude Code. The Codex agent runs `codex`, which reaches
-  // our tools through the MCP server (registered once via `codex mcp add`).
+  // our tools through the MCP server (registered once via `codex mcp add`). The
+  // Antigravity agent runs `agy`, Google's terminal coding agent.
   resolveStartupCommand(backend) {
     const t = this.settings.terminal;
     if (backend === "terminal") return "";
     if (backend === "codex") return "codex";
+    if (backend === "antigravity") return "agy";
     if (backend === "ollama") {
       const model = t.ollamaModel.trim();
       return model ? `ollama launch claude --model ${model}` : "ollama launch claude";

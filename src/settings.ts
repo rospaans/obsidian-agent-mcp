@@ -1,4 +1,4 @@
-import { App, Notice, PluginSettingTab, Setting } from "obsidian";
+import { App, Notice, PluginSettingTab, Setting, ToggleComponent } from "obsidian";
 import type ObsidianAgentMCP from "./main";
 import { checkPython } from "./terminal/pty";
 import type { Availability } from "./terminal/availability";
@@ -6,7 +6,7 @@ import { process } from "./nodeApi";
 
 // Agents the terminal can launch. Adding an entry here surfaces it in both the
 // settings dropdown and the in-terminal toolbar switcher.
-export type AgentBackend = "claude" | "ollama" | "codex" | "terminal";
+export type AgentBackend = "claude" | "ollama" | "codex" | "antigravity" | "terminal";
 
 export interface AgentBackendMeta {
   id: AgentBackend;
@@ -27,6 +27,7 @@ export const AGENT_BACKENDS: ReadonlyArray<AgentBackendMeta> = [
   { id: "claude", label: "Claude Code", requiresCli: true, cliName: "claude", installUrl: "https://claude.com/product/claude-code" },
   { id: "ollama", label: "Ollama (local model)", requiresCli: true, cliName: "ollama", installUrl: "https://docs.ollama.com/quickstart" },
   { id: "codex", label: "Codex", requiresCli: true, cliName: "codex", installUrl: "https://learn.chatgpt.com/docs/codex/cli" },
+  { id: "antigravity", label: "Antigravity", requiresCli: true, cliName: "agy", installUrl: "https://antigravity.google/docs/cli/install/" },
   // A plain interactive shell with no agent, so you can run other commands.
   { id: "terminal", label: "Terminal", requiresCli: false, cliName: "", installUrl: "" },
 ];
@@ -52,7 +53,7 @@ export interface PluginSettings {
 export const DEFAULT_SETTINGS: PluginSettings = {
   terminal: {
     backend: "claude",
-    enabledBackends: { claude: true, ollama: true, codex: true, terminal: true },
+    enabledBackends: { claude: true, ollama: true, codex: true, antigravity: true, terminal: true },
     ollamaModel: "",
     pythonPath: "",
     shell: "",
@@ -232,6 +233,22 @@ export class AgentMCPSettingsTab extends PluginSettingTab {
       );
   }
 
+  // Persists an agent's enabled state, but refuses to disable the last one — an
+  // empty switcher would leave a new terminal with nothing to launch. Reverts the
+  // toggle and warns instead. Re-renders so the default dropdown stays in sync.
+  private async setBackendEnabled(id: AgentBackend, value: boolean, toggle: ToggleComponent): Promise<void> {
+    const enabled = this.plugin.settings.terminal.enabledBackends;
+    if (!value && Object.values({ ...enabled, [id]: false }).every(v => !v)) {
+      new Notice("Keep at least one agent enabled.");
+      toggle.setValue(true);
+      return;
+    }
+    enabled[id] = value;
+    await this.plugin.saveSettings();
+    this.plugin.refreshTerminalBackends();
+    this.display();
+  }
+
   // One row per agent: a toggle to show/hide it in the switcher, plus a live
   // availability badge. Required-CLI agents whose tool isn't detected are grayed
   // out (can't be enabled until installed) with a Recheck button. Probes are lazy
@@ -242,14 +259,21 @@ export class AgentMCPSettingsTab extends PluginSettingTab {
     for (const meta of AGENT_BACKENDS) {
       const setting = new Setting(containerEl).setName(meta.label);
 
+      const enabled = this.plugin.settings.terminal.enabledBackends[meta.id];
+
       if (!meta.requiresCli) {
-        setting.setDesc("Always available.");
-        setting.addToggle(toggle => toggle.setValue(true).setDisabled(true));
+        // The plain terminal is just a shell, so no availability probe — but it's
+        // still a real toggle you can hide from the switcher like any other agent.
+        setting.setDesc("A plain interactive shell — always available when enabled.");
+        setting.addToggle(toggle =>
+          toggle
+            .setValue(enabled)
+            .onChange(value => void this.setBackendEnabled(meta.id, value, toggle)),
+        );
         continue;
       }
 
       const state = this.plugin.getBackendAvailability(meta.id);
-      const enabled = this.plugin.settings.terminal.enabledBackends[meta.id];
       setting.setDesc(availabilityDesc(state));
 
       // You can enable any agent even if its CLI isn't installed — selecting it
@@ -257,12 +281,7 @@ export class AgentMCPSettingsTab extends PluginSettingTab {
       setting.addToggle(toggle =>
         toggle
           .setValue(enabled)
-          .onChange(async value => {
-            this.plugin.settings.terminal.enabledBackends[meta.id] = value;
-            await this.plugin.saveSettings();
-            this.plugin.refreshTerminalBackends();
-            this.display();
-          }),
+          .onChange(value => void this.setBackendEnabled(meta.id, value, toggle)),
       );
 
       setting.addButton(button =>
